@@ -1,0 +1,22 @@
+{
+  "name": "dsh-live2d-body",
+  "version": "0.6.4",
+  "private": true,
+  "description": "Give your DeepSeek Harness agent a controllable Live2D body (layered parameter mixing, phrase vocabulary, selfie, scene persistence).",
+  "license": "MIT",
+  "author": "TyhMad",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node live2d/body-server.mjs",
+    "desktop": "electron live2d/desktop",
+    "check": "node --check live2d/body.js && node --check live2d/body-server.mjs && node --check plugins/body/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

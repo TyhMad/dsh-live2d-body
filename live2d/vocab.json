@@ -1,0 +1,461 @@
+{
+ "version": 2,
+ "note": "词表 v2：她说词，参数藏在词底下。word → channel(通道) → 参数。多个词可以叠加，程度词（微微/有点/很/超）按它前面的那个词缩放，时长词（一会儿/两秒/一直）决定保持多久。数值单位：通道值 1 = 该通道的满幅（下面 params 里的数就是满幅时的参数增量）。",
+ "degrees": {
+  "微微": 0.25,
+  "轻轻": 0.3,
+  "稍微": 0.35,
+  "有点": 0.45,
+  "有点儿": 0.45,
+  "一点": 0.45,
+  "挺": 0.75,
+  "比较": 0.8,
+  "很": 1,
+  "特别": 1.1,
+  "非常": 1.1,
+  "超级": 1.2,
+  "极": 1.25
+ },
+ "durations": {
+  "一下": 1200,
+  "会儿": 2600,
+  "一会儿": 2600,
+  "一下下": 1200,
+  "一秒": 1000,
+  "两秒": 2000,
+  "三秒": 3000,
+  "五秒": 5000,
+  "一直": 0,
+  "保持": 0,
+  "别动": 0
+ },
+ "channels": {
+  "head_roll": {
+   "params": {
+    "ParamAngleZ": 30,
+    "ParamBodyAngleZ": 8,
+    "AngleXbs": -8
+   }
+  },
+  "head_pitch": {
+   "params": {
+    "ParamAngleY": 18,
+    "AngleY": 26
+   },
+   "sinkUp": -8,
+   "sinkDown": 15
+  },
+  "head_yaw": {
+   "params": {
+    "ParamAngleX": 15,
+    "AngleXbs": 10
+   }
+  },
+  "neck_in": {
+   "params": {
+    "ParamAngleY": -12,
+    "AngleY": -14,
+    "ShoulderY": 20
+   },
+   "sinkDown": 8
+  },
+  "eyes_x": {
+   "params": {
+    "ParamEyeBallX": 1
+   }
+  },
+  "eyes_y": {
+   "params": {
+    "ParamEyeBallY": 1
+   }
+  },
+  "eye_open": {
+   "params": {
+    "ParamEyeLOpen": 0.5,
+    "ParamEyeROpen": 0.5
+   },
+   "base": 1
+  },
+  "eye_smile": {
+   "params": {
+    "EyeSmile": 1
+   }
+  },
+  "brow_up": {
+   "params": {
+    "ParamBrowLY": 1,
+    "ParamBrowRY": 1
+   }
+  },
+  "brow_angry": {
+   "params": {
+    "ParamBrowLAngle": 1,
+    "ParamBrowRAngle": 1,
+    "Angry": 0.6
+   }
+  },
+  "brow_sad": {
+   "params": {
+    "BrowInnerUp": 1,
+    "ParamBrowLAngle": 0.8,
+    "ParamBrowRAngle": 0.8
+   }
+  },
+  "mouth_open": {
+   "params": {
+    "ParamMouthOpenY": 1
+   }
+  },
+  "mouth_smile": {
+   "params": {
+    "MouthSmile_L": 1,
+    "MouthSmile_R": 1,
+    "ParamMouthForm": 1
+   }
+  },
+  "mouth_frown": {
+   "params": {
+    "MouthSmile_L": -1,
+    "MouthSmile_R": -1,
+    "ParamMouthForm": -1
+   }
+  },
+  "mouth_pucker": {
+   "params": {
+    "Mouthpucker": 1,
+    "MouthPuckerWiden": 1,
+    "ParamMouthOpenY": 0.25
+   },
+   "note": "嘟嘴：抿起+略张+外扩，单靠 Mouthpucker 在这套皮上看不出来"
+  },
+  "puff": {
+   "params": {
+    "CheeckPuff": 1
+   }
+  },
+  "tongue": {
+   "params": {
+    "TongueOut": 1
+   }
+  },
+  "blush": {
+   "params": {
+    "CheeksWiggleX": 1,
+    "CheeksWiggleY": 1
+   }
+  },
+  "body_pitch": {
+   "params": {
+    "ParamBodyAngleX": 14,
+    "ParamBodyAngleY": -8,
+    "ShoulderY": 6
+   },
+   "sinkDown": 6,
+   "sinkUp": -4
+  },
+  "body_roll": {
+   "params": {
+    "ParamBodyAngleZ": 8,
+    "HipAngleZ": 20
+   }
+  },
+  "body_yaw": {
+   "params": {
+    "HipAngleZ": 20,
+    "ParamHipAngleZ": 14,
+    "ShoulderZ": -10
+   }
+  },
+  "shoulder_up": {
+   "params": {
+    "ShoulderY": 22,
+    "ShoulderZ": 10
+   }
+  },
+  "tail_up": {
+   "params": {
+    "Param_Angle_Rotation84": 6,
+    "Param_Angle_Rotation85": 7,
+    "Param_Angle_Rotation86": 8,
+    "Param_Angle_Rotation87": 8,
+    "Param_Angle_Rotation88": 7,
+    "Param_Angle_Rotation89": 6
+   }
+  },
+  "tail_side": {
+   "params": {
+    "Param_Angle_Rotation84": 9,
+    "Param_Angle_Rotation85": 11,
+    "Param_Angle_Rotation86": 13,
+    "Param_Angle_Rotation87": 13,
+    "Param_Angle_Rotation88": 11,
+    "Param_Angle_Rotation89": 9
+   }
+  },
+  "eye_wide": {
+   "params": {
+    "ParamEyeLOpen": 0.15,
+    "ParamEyeROpen": 0.15
+   },
+   "base": 1
+  },
+  "pout_face": {
+   "params": {
+    "Mouthpucker": 1,
+    "MouthPuckerWiden": 1,
+    "ParamMouthOpenY": 0.25,
+    "CheeckPuff": 0.8,
+    "ParamBrowLY": -0.5,
+    "ParamBrowRY": -0.5
+   },
+   "sinkDown": 4,
+   "note": "整脸嘟嘴：嘴+鼓腮+眉"
+  }
+ },
+ "waves": {
+  "tail_wag": {
+   "ids": [
+    "Param_Angle_Rotation84",
+    "Param_Angle_Rotation85",
+    "Param_Angle_Rotation86",
+    "Param_Angle_Rotation87",
+    "Param_Angle_Rotation88",
+    "Param_Angle_Rotation89"
+   ],
+   "amp": 11,
+   "hz": 1.2,
+   "ms": 2800
+  },
+  "nod": {
+   "ids": [
+    "ParamAngleY"
+   ],
+   "amp": 9,
+   "hz": 1.7,
+   "ms": 1500
+  },
+  "shake": {
+   "ids": [
+    "ParamAngleX"
+   ],
+   "amp": 9,
+   "hz": 1.6,
+   "ms": 1800
+  }
+ },
+ "words": {
+  "歪头": {
+   "head_roll": 1
+  },
+  "侧头": {
+   "head_roll": -1
+  },
+  "偏头": {
+   "head_roll": 0.8,
+   "head_yaw": 0.3
+  },
+  "抬头": {
+   "head_pitch": 1
+  },
+  "仰头": {
+   "head_pitch": 1,
+   "body_pitch": -0.5
+  },
+  "低头": {
+   "head_pitch": -1
+  },
+  "垂眼": {
+   "head_pitch": -0.6,
+   "eye_open": -0.4
+  },
+  "点头": {
+   "wave": "nod"
+  },
+  "摇头": {
+   "wave": "shake"
+  },
+  "晃头": {
+   "wave": "shake"
+  },
+  "左看": {
+   "head_yaw": -1,
+   "eyes_x": -0.9
+  },
+  "右看": {
+   "head_yaw": 1,
+   "eyes_x": 0.9
+  },
+  "回头": {
+   "head_yaw": 1
+  },
+  "看你": {
+   "head_yaw": 0,
+   "eyes_x": 0,
+   "eyes_y": 0.1
+  },
+  "看这": {
+   "head_yaw": 0,
+   "eyes_y": -0.2
+  },
+  "缩脖": {
+   "neck_in": 1
+  },
+  "缩脖子": {
+   "neck_in": 1
+  },
+  "前倾": {
+   "body_pitch": 1
+  },
+  "凑近": {
+   "body_pitch": 1,
+   "head_pitch": 0.3
+  },
+  "后仰": {
+   "body_pitch": -1
+  },
+  "往后仰": {
+   "body_pitch": -1
+  },
+  "侧身": {
+   "body_roll": 1
+  },
+  "斜身": {
+   "body_roll": 0.7,
+   "head_roll": 0.4
+  },
+  "扭腰": {
+   "body_yaw": 1
+  },
+  "转过来": {
+   "body_yaw": 0.8,
+   "head_yaw": 0.5
+  },
+  "提肩": {
+   "shoulder_up": 1
+  },
+  "耸肩": {
+   "shoulder_up": 1
+  },
+  "沉肩": {
+   "shoulder_up": -1
+  },
+  "放松肩": {
+   "shoulder_up": -0.7
+  },
+  "眯眼": {
+   "eye_open": -0.7,
+   "eye_smile": 0.5
+  },
+  "闭眼": {
+   "eye_open": -1
+  },
+  "睁大眼": {
+   "eye_wide": 1
+  },
+  "瞪眼": {
+   "brow_up": 0.6,
+   "eye_wide": 1
+  },
+  "笑眼": {
+   "eye_smile": 1
+  },
+  "抬眉": {
+   "brow_up": 1
+  },
+  "挑眉": {
+   "brow_up": 0.8,
+   "head_roll": 0.25
+  },
+  "皱眉": {
+   "brow_angry": 0.9
+  },
+  "凶": {
+   "brow_angry": 1,
+   "eye_open": -0.35
+  },
+  "委屈": {
+   "brow_sad": 1,
+   "mouth_frown": 0.9,
+   "head_pitch": -0.35
+  },
+  "张嘴": {
+   "mouth_open": 0.9
+  },
+  "惊讶": {
+   "mouth_open": 1,
+   "brow_up": 1,
+   "eye_open": 1
+  },
+  "笑": {
+   "mouth_smile": 1,
+   "eye_smile": 0.8
+  },
+  "微笑": {
+   "mouth_smile": 0.7,
+   "eye_smile": 0.5
+  },
+  "咧嘴": {
+   "mouth_smile": 1,
+   "mouth_open": 0.25
+  },
+  "撇嘴": {
+   "mouth_frown": 0.6,
+   "mouth_pucker": 0.4
+  },
+  "嘟嘴": {
+   "mouth_pucker": 1,
+   "puff": 0.75,
+   "eye_open": -0.36,
+   "head_pitch": 0.28,
+   "head_roll": 0.17
+  },
+  "鼓脸": {
+   "puff": 1,
+   "eye_open": -0.3
+  },
+  "腮帮": {
+   "puff": 0.8
+  },
+  "吐舌": {
+   "tongue": 1,
+   "mouth_open": 0.3
+  },
+  "吐舌头": {
+   "tongue": 1,
+   "mouth_open": 0.3
+  },
+  "脸红": {
+   "blush": 1
+  },
+  "害羞": {
+   "blush": 1,
+   "eye_smile": 0.6,
+   "head_roll": 0.35,
+   "head_pitch": -0.3
+  },
+  "尾巴甩": {
+   "wave": "tail_wag"
+  },
+  "摇尾巴": {
+   "wave": "tail_wag"
+  },
+  "甩尾巴": {
+   "wave": "tail_wag"
+  },
+  "尾巴翘": {
+   "tail_up": 1
+  },
+  "翘尾巴": {
+   "tail_up": 1
+  },
+  "尾巴垂": {
+   "tail_up": -1
+  },
+  "尾巴偏": {
+   "tail_side": 1
+  },
+  "摆尾巴": {
+   "tail_side": 1
+  }
+ }
+}

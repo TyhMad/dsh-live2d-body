@@ -1,0 +1,81 @@
+{
+  "id": "body",
+  "name": "Live2D 身体",
+  "version": "0.6.4",
+  "description": "让她操控书房电脑上的 Live2D 身体：换表情、做动作、把她说的话显示成字幕并同步口型；别人说话时她也会抬头、换脸。",
+  "main": "index.js",
+  "enabledByDefault": false,
+  "capabilities": [
+    "body.status",
+    "body.say"
+  ],
+  "settings": {
+    "enabled": true,
+    "scope": "private",
+    "chats": "",
+    "baseUrl": "http://127.0.0.1:17901",
+    "mirror": true,
+    "autoFace": true,
+    "reactIncoming": true,
+    "reactCooldownMs": 8000,
+    "timeoutMs": 2500
+  },
+  "configSchema": {
+    "enabled": {
+      "type": "boolean",
+      "label": "启用身体",
+      "description": "关掉后她说的每句话不再同步到 Live2D 窗口"
+    },
+    "scope": {
+      "type": "string",
+      "label": "跟随哪些会话",
+      "description": "private=只跟私聊（群聊里她不会动这具身体，也不会看到这套词表）；custom=私聊 + 下面列出的群；all=所有会话",
+      "enum": [
+        "private",
+        "custom",
+        "all"
+      ]
+    },
+    "chats": {
+      "type": "string",
+      "label": "额外允许的群",
+      "description": "只在「跟随哪些会话 = custom」时生效。填群号，多个用逗号隔开，例如 123456789,987654321"
+    },
+    "baseUrl": {
+      "type": "string",
+      "label": "身体地址",
+      "description": "书房电脑上的 Live2D 服务地址，默认走 SSH 反向隧道的 127.0.0.1:17901"
+    },
+    "mirror": {
+      "type": "boolean",
+      "label": "把她说的话同步到身体",
+      "description": "她在 QQ 里每说一句，身体跟着说一遍（字幕 + 口型）"
+    },
+    "autoFace": {
+      "type": "boolean",
+      "label": "自动换表情",
+      "description": "按说话内容和心情底色自动挑一张脸，关掉就只动嘴"
+    },
+    "reactIncoming": {
+      "type": "boolean",
+      "label": "别人说话时有反应",
+      "description": "有人给她发消息，她抬头、换个表情（不开口），别一直站着像张壁纸"
+    },
+    "reactCooldownMs": {
+      "type": "number",
+      "label": "反应冷却（毫秒）",
+      "description": "两条反应之间至少隔多久，免得一直抽",
+      "min": 2000,
+      "max": 60000,
+      "step": 500
+    },
+    "timeoutMs": {
+      "type": "number",
+      "label": "超时（毫秒）",
+      "description": "连不上身体时最多等多久，别拖慢聊天",
+      "min": 500,
+      "max": 8000,
+      "step": 100
+    }
+  }
+}

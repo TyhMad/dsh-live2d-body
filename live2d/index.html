@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#0c1017" />
+<title>Live2D 身体</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: radial-gradient(1200px 800px at 50% 30%, #1b2334 0%, #0c1017 55%, #07090d 100%); }
+  #stage { position: fixed; inset: 0; z-index: 0; touch-action: none; }
+  canvas { display: block; }
+
+  /* 顶部状态条：像通话界面那样，一眼知道她在线、在干什么 */
+  #topbar {
+    position: fixed; left: 0; right: 0; top: 0; z-index: 26;
+    display: flex; align-items: center; gap: 8px;
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 14px 10px;
+    background: linear-gradient(180deg, rgba(8, 11, 16, .82), rgba(8, 11, 16, 0));
+    font: 600 15px/1.2 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; color: #eaf2ff;
+  }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: #f0a53c; box-shadow: 0 0 8px rgba(240,165,60,.8); flex: 0 0 auto; }
+  #dot.on { background: #45d483; box-shadow: 0 0 8px rgba(69,212,131,.8); }
+  #topbar .name { font-weight: 700; letter-spacing: .3px; }
+  #topbar .sub { font-weight: 600; font-size: 13px; color: #a9bed8; margin-left: 2px; }
+  #btnHist {
+    margin-left: auto; padding: 7px 12px; border-radius: 999px; cursor: pointer;
+    border: 1px solid rgba(140,190,255,.28); background: rgba(16,22,32,.72); color: #cfe3ff;
+    font: 600 13px/1 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  #btnMood {
+    padding: 7px 12px; border-radius: 999px; cursor: pointer;
+    border: 1px solid rgba(190,150,255,.32); background: rgba(24,18,34,.72); color: #e2d4ff;
+    font: 600 13px/1 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  body.desktop #topbar { display: none; }
+
+  /* 状态小标签：姿态/表情/情绪/身上挂的东西 */
+  #chips {
+    position: fixed; left: 0; right: 0; z-index: 26;
+    top: calc(46px + env(safe-area-inset-top, 0px));
+    padding: 0 14px; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none;
+  }
+  #chips span {
+    padding: 5px 10px; border-radius: 999px; font: 600 13px/1.2 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    color: #dbe9fb; background: rgba(22, 30, 42, .82); border: 1px solid rgba(130, 170, 220, .30);
+  }
+  body.desktop #chips { display: none; }
+
+  #bubble {
+    position: fixed; left: 50%; bottom: 6vh; transform: translateX(-50%) translateY(12px);
+    max-width: min(680px, 78vw); padding: 14px 20px; border-radius: 18px;
+    background: rgba(14, 18, 26, .95); border: 1px solid rgba(150, 200, 255, .40);
+    color: #f4f8ff; font: 600 19px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, .55);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .45); opacity: 0;
+    pointer-events: none; white-space: pre-wrap; word-break: break-word; z-index: 20;
+    transition: opacity .18s ease, transform .18s ease;
+  }
+  #bubble.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  @media (max-width: 820px) {
+    #bubble {
+      max-width: 88vw; bottom: calc(6vh + env(safe-area-inset-bottom, 0px));
+      font-size: 20px; padding: 14px 18px; border-radius: 16px; line-height: 1.6;
+    }
+    #hud { left: 10px; bottom: calc(78px + env(safe-area-inset-bottom, 0px)); font-size: 10px; padding: 5px 7px; }
+  }
+  /* 调试信息挪到左下角：顶部让给状态条，别两行字压在一起 */
+  #hud {
+    position: fixed; left: 12px; bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+    color: #8fa3bd; font: 10px/1.4 ui-monospace, Consolas, monospace;
+    background: rgba(10, 14, 20, .42); border: 1px solid rgba(120, 160, 210, .12); border-radius: 8px; padding: 5px 8px;
+    pointer-events: none; user-select: none; z-index: 27; opacity: .62; max-width: 46vw;
+  }
+  #hud b { color: #cfe3ff; font-weight: 600; }
+  html.desktop, body.desktop { background: transparent; }
+  body.desktop #hud { display: none; }
+  #drag { position: fixed; inset: 0 0 auto 0; height: 26px; z-index: 30; -webkit-app-region: drag; display: none; }
+  body.desktop #drag { display: block; }
+
+  /* 输入条 */
+  #chatbar {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    width: min(560px, 92vw); display: flex; gap: 8px; z-index: 28;
+  }
+  body.desktop #chatbar { display: none; }
+  #chatin {
+    flex: 1 1 auto; min-width: 0; padding: 13px 15px; border-radius: 14px;
+    border: 1px solid rgba(140, 190, 255, .30); background: rgba(14, 18, 26, .9);
+    color: #eaf2ff; font: 500 16px/1.4 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    outline: none;
+  }
+  #chatin:focus { border-color: rgba(150, 200, 255, .65); }
+  #chatsend {
+    flex: 0 0 auto; padding: 13px 18px; border-radius: 14px; border: 0; cursor: pointer;
+    background: linear-gradient(180deg, #4f8ef7, #3f6fd8); color: #fff;
+    font: 600 16px/1.2 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  #chatsend:disabled { opacity: .55; }
+  #bubble { bottom: calc(6vh + 74px); }
+
+  /* 两个抽屉：对话记录 / 心情。手机上一个盖住另一个的问题就是这么来的 */
+  #histPanel, #moodPanel {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    height: min(74vh, 640px); transform: translateY(102%); transition: transform .24s cubic-bezier(.3,.8,.3,1);
+    background: rgba(9, 12, 18, .985); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    border-top: 1px solid rgba(120, 160, 210, .22);
+    border-radius: 18px 18px 0 0; display: flex; flex-direction: column;
+    box-shadow: 0 -18px 50px rgba(0, 0, 0, .55);
+  }
+  #moodPanel { height: min(78vh, 620px); }
+  #histPanel.open, #moodPanel.open { transform: translateY(0); }
+  body.hist-open #chatbar, body.hist-open #bubble { opacity: 0; pointer-events: none; }
+  .histHead {
+    display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px;
+    font: 600 14px/1.2 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; color: #dce9fb;
+  }
+  .histHead .meta { margin-left: auto; font-weight: 500; font-size: 12px; color: #7f93ad; }
+  .histHead button {
+    border: 0; background: rgba(255,255,255,.06); color: #cfe3ff; width: 28px; height: 28px;
+    border-radius: 50%; font-size: 16px; line-height: 1; cursor: pointer;
+  }
+  .mood { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: rgba(120,140,200,.16); color: #cdd8ff; border: 1px solid rgba(140,165,240,.22); white-space: nowrap; }
+  #moodBox { padding: 10px 16px 12px; border-bottom: 1px solid rgba(255,255,255,.07); }
+  .moodTop { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+  #moodValue { font-size: 20px; font-weight: 600; color: #eaf0ff; }
+  .moodTitle { font-size: 11px; color: #8b93a8; margin: 12px 0 6px; }
+  .moodBar { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 11px; color: #a9b3c9; }
+  .moodBar .nm { width: 44px; flex: none; }
+  .moodBar .track { flex: 1; height: 5px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+  .moodBar .fill { display: block; height: 100%; min-width: 2px; border-radius: 999px; background: linear-gradient(90deg, #6f8bff, #9d7bff); }
+  .moodChange { font-size: 11.5px; color: #b6bfd4; margin: 8px 0; line-height: 1.45; }
+  .moodChange b { color: #8fd6a8; font-weight: 600; }
+  .moodChange.down b { color: #e79a9a; }
+  .moodChange .line2 { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0 2px; }
+  .moodChange .eb {
+    padding: 1px 7px; border-radius: 999px; font-size: 11px;
+    background: rgba(120, 200, 160, .12); color: #8fd6a8; border: 1px solid rgba(120, 200, 160, .22);
+  }
+  .moodChange .eb.down { background: rgba(220, 140, 140, .12); color: #e79a9a; border-color: rgba(220, 140, 140, .22); }
+  .moodChange .src { color: #7f93ad; margin-left: 4px; }
+  .moodChange .line3 { color: #93a3bb; margin-top: 2px; }
+  .moodBar .num { width: 34px; flex: none; text-align: right; color: #7f93ad; font-size: 10.5px; }
+  .moodBar.hot .fill { background: linear-gradient(90deg, #d4699a, #a34bd0); }
+  #moodBox { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  #histList { flex: 1 1 auto; overflow-y: auto; padding: 4px 12px 18px; -webkit-overflow-scrolling: touch; }
+  .msg { display: flex; margin: 8px 0; }
+  .msg .bub {
+    max-width: 82%; padding: 10px 13px; border-radius: 14px; white-space: pre-wrap; word-break: break-word;
+    font: 500 15px/1.55 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .msg.me { justify-content: flex-end; }
+  .msg.me .bub { background: linear-gradient(180deg, #3f6fd8, #355fb8); color: #fff; border-bottom-right-radius: 5px; }
+  .msg.her .bub { background: rgba(26, 33, 45, .96); color: #e6eefb; border: 1px solid rgba(120,160,210,.16); border-bottom-left-radius: 5px; }
+  /* 她主动找你：左侧小标签 + 气泡一道暖色边，一眼能分出来 */
+  .msg.proactive { align-items: center; }
+  .msg.proactive .bub { border-color: rgba(240, 180, 90, .55); box-shadow: 0 0 0 1px rgba(240, 180, 90, .12) inset; }
+  .msg .ptag {
+    flex: 0 0 auto; margin-right: 8px; padding: 2px 7px; border-radius: 999px;
+    background: rgba(240, 180, 90, .16); color: #f0b45a; border: 1px solid rgba(240, 180, 90, .35);
+    font: 500 11px/1.4 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; white-space: nowrap;
+  }
+  .msg .mtime {
+    flex: 0 0 auto; margin-left: 8px; color: #6b7f99;
+    font: 500 11px/1.4 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .histEmpty { color: #7286a0; font: 500 13px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; text-align: center; padding: 24px 0; }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="drag"></div>
+  <div id="bubble"></div>
+
+  <div id="topbar">
+    <span id="dot"></span>
+    <span class="name">Live2D</span>
+    <span class="sub" id="sub">连接中…</span>
+    <span class="mood" id="moodChip" title="她此刻的心情">心情 —</span>
+    <button id="btnHist" type="button">对话记录</button>
+    <button id="btnMood" type="button">心情</button>
+  </div>
+  <div id="chips"></div>
+
+  <div id="hud"><b>Live2D</b> · 身体待机中<br /><span id="hud2">连接中…</span></div>
+
+  <script>
+    // 最早期的报错抓在这里：body.js 还没执行时出的错（比如模块顶层就炸了）也要能看见，
+    // 不然页面只会停在「连接中…」，从外面完全查不到原因。
+    window.__earlyErr = '';
+    window.addEventListener('error', (e) => {
+      window.__earlyErr = String((e.message || '') + ' @' + (e.filename || '') + ':' + (e.lineno || 0));
+      document.title = 'ERR ' + window.__earlyErr;
+    }, true);
+    window.addEventListener('unhandledrejection', (e) => {
+      const r = e.reason;
+      window.__earlyErr = 'reject: ' + String((r && (r.stack || r.message)) || r);
+      document.title = 'ERR ' + window.__earlyErr;
+    });
+  </script>
+
+  <script>
+    if (new URLSearchParams(location.search).get('desktop') === '1') {
+      document.documentElement.classList.add('desktop');
+      document.body.classList.add('desktop');
+    }
+  </script>
+
+  <form id="chatbar" autocomplete="off">
+    <input id="chatin" type="text" placeholder="跟她说点什么…" enterkeyhint="send" maxlength="300" />
+    <button id="chatsend" type="submit">发送</button>
+  </form>
+
+  <div id="histPanel">
+    <div class="histHead">
+      <span>对话记录</span>
+      <span class="meta" id="histMeta"></span>
+      <button id="histClose" type="button">×</button>
+    </div>
+    <div id="histList"><div class="histEmpty">还没有记录</div></div>
+  </div>
+
+  <div id="moodPanel">
+    <div class="histHead">
+      <span>心情</span>
+      <span class="meta" id="moodMeta"></span>
+      <button id="moodClose" type="button">×</button>
+    </div>
+    <div id="moodBox">
+      <div class="moodTop"><span id="moodValue">—</span><span id="moodLabel" class="meta"></span></div>
+      <div id="moodBars"></div>
+      <div class="moodTitle">哪句话让她心情变了</div>
+      <div id="moodChanges"><div class="histEmpty">还没有记过账</div></div>
+    </div>
+  </div>
+
+  <script>
+    // ---------- 页面外壳：状态条 / 小标签 / 历史会话 / 输入 ----------
+    (() => {
+      const key = new URLSearchParams(location.search).get('k') || '';
+      const q = key ? ('?k=' + encodeURIComponent(key)) : '';
+      const $ = (id) => document.getElementById(id);
+
+      const dot = $('dot'), sub = $('sub'), chips = $('chips');
+      const list = $('histList'), meta = $('histMeta'), panel = $('histPanel');
+      const form = $('chatbar'), input = $('chatin'), btn = $('chatsend');
+
+      // --- 历史消息 ---
+      let rendered = 0;
+      function hhmm(ms) {
+        if (!ms) return '';
+        try {
+          return new Date(ms).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        } catch { return ''; }
+      }
+      function bubbleEl(who, text, opts) {
+        const o = opts || {};
+        const row = document.createElement('div');
+        row.className = 'msg ' + (who === 'me' ? 'me' : 'her') + (o.proactive ? ' proactive' : '');
+        if (o.proactive) {
+          const tag = document.createElement('span');
+          tag.className = 'ptag';
+          tag.textContent = '她主动找你';
+          row.appendChild(tag);
+        }
+        const b = document.createElement('div');
+        b.className = 'bub';
+        b.textContent = text;
+        row.appendChild(b);
+        const t = hhmm(o.at);
+        if (t) {
+          const tm = document.createElement('div');
+          tm.className = 'mtime';
+          tm.textContent = t;
+          row.appendChild(tm);
+        }
+        return row;
+      }
+      function pushMsg(who, text, opts) {
+        const empty = list.querySelector('.histEmpty');
+        if (empty) empty.remove();
+        list.appendChild(bubbleEl(who, text, opts));
+        rendered += 1;
+        list.scrollTop = list.scrollHeight;
+      }
+      async function loadHistory() {
+        try {
+          const r = await fetch('/history' + (q ? q + '&' : '?') + 'limit=60', { cache: 'no-store' });
+          const j = await r.json();
+          const msgs = (j && j.messages) || [];
+          list.innerHTML = '';
+          rendered = 0;
+          if (!msgs.length) {
+            list.innerHTML = '<div class="histEmpty">还没有记录</div>';
+            return;
+          }
+          for (const m of msgs) pushMsg(m.who === 'her' ? 'her' : 'me', m.text, { at: m.at, proactive: m.proactive });
+          // 铺完再滚到底：布局要等一帧，不然会停在最上面
+          const toBottom = () => { list.scrollTop = list.scrollHeight; };
+          requestAnimationFrame(() => { toBottom(); requestAnimationFrame(toBottom); });
+          setTimeout(toBottom, 260);
+          const first = msgs[0], last = msgs[msgs.length - 1];
+          meta.textContent = msgs.length + ' 条' + (last && last.at ? (' · ' + new Date(last.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })) : '');
+          void first;
+        } catch (e) {
+          meta.textContent = '读取失败';
+        }
+      }
+
+      // --- 她刚说的话：body.js 里 say() 会发这个事件 ---
+      window.addEventListener('fish-say', (e) => {
+        const d = (e && e.detail) || {};
+        if (d.text) pushMsg('her', String(d.text), { proactive: d.proactive === true, at: Date.now() });
+      });
+      window.addEventListener('fish-say-when-open', () => {});
+
+      // --- 心情：顶栏小牌 + 抽屉里的分数/七根条/哪句话让她变了 ---
+      const EMO_CN = { joy: '开心', steady: '踏实', sweet: '甜蜜', worry: '心疼', anxious: '担心', sad: '难过', jealous: '吃醋', desire: '性欲' };
+      async function loadMood() {
+        try {
+          const r = await fetch('/mood' + (q ? q : ''), { cache: 'no-store' });
+          if (!r.ok) return;
+          const j = await r.json();
+          const v = Math.round(j.value || 0);
+          const chip = $('moodChip');
+          if (chip) chip.textContent = '心情 ' + v;
+          $('moodValue').textContent = String(v);
+          $('moodLabel').textContent = j.label || '';
+          const bars = Object.keys(EMO_CN).map((k) => {
+            const val = Number((j.emo || {})[k] || 0);
+            const pct = Math.max(0, Math.min(100, Math.round(val * 100)));
+            const hot = k === 'desire' ? ' hot' : '';
+            return `<div class="moodBar${hot}"><span class="nm">${EMO_CN[k]}</span><span class="track"><span class="fill" style="width:${pct}%"></span></span><span class="num">${pct}%</span></div>`;
+          }).join('');
+          $('moodBars').innerHTML = bars;
+          const rows = (j.changes || []);
+          // 每一行除了「总分 ±n」，还列出这一次具体哪几根情绪动了、动了多少
+          $('moodChanges').innerHTML = rows.length
+            ? rows.map((x) => {
+              const d = new Date(x.at);
+              const hh = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+              const dd = (x.d > 0 ? '+' : '') + x.d;
+              const src = x.src ? `<span class="src">「${x.src}」</span>` : '';
+              const emoBits = Object.entries(x.emo || {})
+                .filter(([k, val]) => EMO_CN[k] && Math.abs(Number(val) || 0) >= 0.01)
+                .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+                .map(([k, val]) => {
+                  const n = Number(val);
+                  return `<span class="eb${n < 0 ? ' down' : ''}">${EMO_CN[k]} ${n > 0 ? '+' : ''}${n.toFixed(2)}</span>`;
+                }).join('');
+              return `<div class="moodChange${x.d < 0 ? ' down' : ''}">`
+                + `<div class="line1">${hh} <b>${dd}</b>${src}</div>`
+                + (emoBits ? `<div class="line2">${emoBits}</div>` : '')
+                + `<div class="line3">${x.reason || ''}</div></div>`;
+            }).join('')
+            : '<div class="histEmpty">还没有记过账</div>';
+        } catch (e) { /* 心情读不到不影响看鱼 */ }
+      }
+
+      // 两个抽屉互斥：打开一个就收起另一个（手机上以前是心情盖住对话记录）
+      function openDrawer(which) {
+        const hist = $('histPanel'), mood = $('moodPanel');
+        hist.classList.toggle('open', which === 'hist');
+        mood.classList.toggle('open', which === 'mood');
+        document.body.classList.toggle('hist-open', which === 'hist' || which === 'mood');
+        if (which === 'hist') loadHistory();
+        else loadMood();
+      }
+      function closeDrawers() {
+        $('histPanel').classList.remove('open');
+        $('moodPanel').classList.remove('open');
+        document.body.classList.remove('hist-open');
+      }
+      $('btnHist').addEventListener('click', () => openDrawer('hist'));
+      $('btnMood').addEventListener('click', () => openDrawer('mood'));
+      $('histClose').addEventListener('click', closeDrawers);
+      $('moodClose').addEventListener('click', closeDrawers);
+      $('moodChip').addEventListener('click', () => openDrawer('mood'));
+
+      // --- 状态条 + 小标签（每 3 秒读一次 /state）---
+      const STATE_LABEL = { head: '头', tail: '尾', face: '脸', body: '身' };
+      async function pollState() {
+        try {
+          const r = await fetch('/state' + q, { cache: 'no-store' });
+          const j = await r.json();
+          const hb = (j && j.lastHb) || null;
+          const alive = !!(j && j.clients > 0);
+          dot.classList.toggle('on', alive);
+          if (!alive) { sub.textContent = '没人在看'; }
+          else {
+            const bits = [];
+            if (hb && hb.poseName) bits.push(hb.poseName);
+            if (hb && hb.expr) bits.push(hb.expr);
+            if (hb && hb.emoName && hb.emoName !== '平静') bits.push('心里' + hb.emoName);
+            if (hb && hb.word) bits.push('说「' + hb.word + '」');
+            sub.textContent = alive ? (bits.length ? bits.join(' · ') : '在，陪你着呢') : '没人在看';
+          }
+          const tags = [];
+          if (hb && hb.poseName) tags.push('姿态 ' + hb.poseName);
+          if (hb && hb.expr) tags.push('表情 ' + hb.expr);
+          if (hb && hb.emoName && hb.emoName !== '平静') tags.push('情绪 ' + hb.emoName);
+          if (hb && hb.sw) String(hb.sw).split(',').filter(Boolean).forEach((s) => tags.push(s));
+          if (hb && hb.talk) tags.push('正在说话');
+          chips.innerHTML = tags.slice(0, 5).map((t) => '<span>' + t.replace(/[<>&]/g, '') + '</span>').join('');
+          void STATE_LABEL;
+        } catch (e) { /* 忽略：服务重启时会有几秒读不到 */ }
+      }
+      setInterval(pollState, 3000);
+      pollState();
+
+      // --- 发送 ---
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+        btn.disabled = true;
+        pushMsg('me', text);
+        try {
+          const r = await fetch('/chat' + q, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text })
+          });
+          if (!r.ok) {
+            const j = await r.json().catch(() => ({}));
+            input.value = text;
+            input.placeholder = '没送出去：' + (j.error || r.status);
+          }
+        } catch (err) {
+          input.value = text;
+          input.placeholder = '网络不对：' + err.message;
+        } finally {
+          btn.disabled = false;
+          input.focus();
+          pollState();
+        }
+      });
+      window.addEventListener('resize', () => { if (window.visualViewport) window.scrollTo(0, 0); });
+    })();
+  </script>
+
+  <!-- 依赖缺了别黑屏：脚本加载失败时把缺哪个文件写在左上角 -->
+  <script>
+    window.addEventListener('error', function (e) {
+      var t = e && e.target;
+      if (!t || t.tagName !== 'SCRIPT') return;
+      var el = document.getElementById('vendorHint');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'vendorHint';
+        el.style.cssText = 'position:fixed;left:16px;top:16px;z-index:9;max-width:62ch;padding:10px 14px;' +
+          'border-radius:10px;background:#3a1f24;color:#ffd7d7;font:13px/1.6 system-ui;white-space:pre-wrap';
+        document.body.appendChild(el);
+      }
+      el.textContent += '缺少依赖：' + t.src + '\n按 live2d/vendor/README.md 准备（PIXI / cubism4 / Cubism Core）\n';
+    }, true);
+  </script>
+  <script src="/vendor/live2dcubismcore.min.js"></script>
+  <script src="/vendor/pixi.min.js"></script>
+  <script src="/vendor/cubism4.min.js"></script>
+  <script src="/body.js"></script>
+</body>
+</html>

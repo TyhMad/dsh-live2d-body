@@ -1,0 +1,7 @@
+{
+  "name": "live2d-body-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Live2D desktop shell (transparent, always-on-top window)",
+  "main": "main.js"
+}
