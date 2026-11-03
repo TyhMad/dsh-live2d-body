@@ -1,0 +1,6 @@
+node_modules/          ← 依赖目录，几百 MB，别人 clone 后自己 npm install 就行
+live2d/vendor/*.js     ← 别人用 scripts/get-vendor.ps1 自己下
+live2d/model/          ← 模型，授权原因不能进仓库
+*.moc3                 ← 同上
+scene.json             ← 运行时的现场存档，属于「你机器上的状态」
+*.log
