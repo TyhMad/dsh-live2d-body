@@ -102,14 +102,15 @@ const POSES = {
   '沉肩': { ch: 'body', set: { ShoulderY: -22, ShoulderZ: -6 } },
   '缩脖': { ch: 'body', sink: 8, set: { ShoulderY: 20, ParamAngleY: -12, AngleY: -14 } },
   '并腿': { ch: 'body', set: { Param33: 1 } },
-  '鼓脸': { ch: 'face', set: { CheeckPuff: 1, Mouthpucker: 0.8, ParamMouthForm: 0.5 } },
+  // 鼓腮必须左右一起推（CheeckPuffL/R），只推 CheeckPuff 在网页尺寸下看不出来
+  '鼓脸': { ch: 'face', set: { CheeckPuff: 1, CheeckPuffL: 0.9, CheeckPuffR: 0.9, Mouthpucker: 0.6, MouthPuckerWiden: 0.6, ParamMouthOpenY: 0.3, ParamMouthForm: 0.5 } },
   '眯眼': { ch: 'face', set: { EyeSmile: 1, ParamEyeLOpen: 0.45, ParamEyeROpen: 0.45 } },
   '瞪眼': { ch: 'face', set: { ParamEyeLOpen: 1, ParamEyeROpen: 1, BrowInnerUp: 0.8, ParamBrowLY: 0.6, ParamBrowRY: 0.6 } },
   '抬眉': { ch: 'face', set: { ParamBrowLY: 1, ParamBrowRY: 1, BrowInnerUp: 0.5 } },
   '皱眉': { ch: 'face', set: { ParamBrowLAngle: 1, ParamBrowRAngle: 1, BrowInnerUp: -0.6 } },
-  // 只推 Mouthpucker 在这套皮上只有几个像素，460×700 的窗口里根本看不出来；
-  // 现在嘴唇外扩+略张，再叠鼓腮、半眯眼、头微低微侧，远看才有「在闹别扭」的形状。
-  '嘟嘴': { ch: 'face', set: { Mouthpucker: 1, MouthPuckerWiden: 1, ParamMouthOpenY: 0.25, CheeckPuff: 0.8, ParamBrowLY: -0.5, ParamBrowRY: -0.5, ParamEyeLOpen: 0.8, ParamEyeROpen: 0.8, ParamAngleY: -4, ParamAngleZ: 5 } },
+  // 只推 Mouthpucker 在这套皮上只有几个像素，网页尺寸下等于没动；
+  // 现在嘴唇外扩+漏斗+张开一点，再叠鼓腮、压眉、头微低微侧，远看才有「在闹别扭」的形状。
+  '嘟嘴': { ch: 'face', set: { Mouthpucker: 1, MouthPuckerWiden: 1, MouthFunnel: 0.35, ParamMouthOpenY: 0.45, ParamMouthForm: 0.6, CheeckPuff: 1, CheeckPuffL: 0.9, CheeckPuffR: 0.9, ParamBrowLY: -0.7, ParamBrowRY: -0.7, ParamBrowLAngle: 0.4, ParamBrowRAngle: 0.4, ParamEyeLOpen: 0.78, ParamEyeROpen: 0.78, ParamAngleY: -5, ParamAngleZ: 7 } },
   '复位': { ch: 'all', clear: true }
 };
 
@@ -1075,6 +1076,7 @@ function applyWord(text, holdMs) {
 }
 
 let lastWord = '';
+let phraseExprTimer = 0;   // exp3 类词（脸红）到点自己收
 
 // ── 词表 v2：把「一句话」拆成通道，再落成参数 ───────────────────────────
 // 为什么要有这层：老词表一个词只对一种东西（或表情、或姿态、或开关），
@@ -1112,6 +1114,7 @@ function applyPhrase(text, holdMs) {
   const ch = {};
   const used = [];
   const waves = [];
+  const exprs = [];        // 有些词真身是 exp3（脸红就是），光写参数看不出来
   let degree = 1;
   let durMs = null;
   let i = 0;
@@ -1128,6 +1131,7 @@ function applyPhrase(text, holdMs) {
       matched += 1;
       for (const [c, v] of Object.entries(e)) {
         if (c === 'wave') { waves.push(v); continue; }
+        if (c === 'switch') { exprs.push(String(v)); continue; }
         ch[c] = (ch[c] || 0) + Number(v) * degree;
       }
       degree = 1;                 // 程度词只管紧跟着的那个词
@@ -1180,9 +1184,24 @@ function applyPhrase(text, holdMs) {
       t0: now, until: now + Math.max(300, Math.min(30000, Number(wv.ms) || 2000))
     });
   }
-  if (!n && !waves.length) return null;
+  // exp3 类（脸红…）：这类效果只在模型自带的表达式里，参数里没有
+  let exprOn = '';
+  if (exprs.length) {
+    const want = exprs[0];
+    if (applyModelExpression(want)) {
+      exprOn = want;
+      hud(`模型动画：${want}`);
+      const keep = hold > 0 ? hold : (durMs || EXPR_IMPLICIT_MS);
+      if (phraseExprTimer) clearTimeout(phraseExprTimer);
+      phraseExprTimer = setTimeout(() => {
+        if (modelExprActive === want) clearModelExpression();
+        phraseExprTimer = 0;
+      }, Math.max(1500, keep));
+    }
+  }
+  if (!n && !waves.length && !exprOn) return null;
   lastWord = used.join('+');
-  return { ok: true, words: used, channels: applied, hold, sink: +sink.toFixed(1), n };
+  return { ok: true, words: used, channels: applied, hold, sink: +sink.toFixed(1), n, expr: exprOn };
 }
 
 function applyExpression(name, holdMs) {
@@ -1551,6 +1570,9 @@ function applyPose(name, holdMs) {
     for (const id of HAND_PARAMS) zeroHands[id] = 0;
     setParamMap(zeroHands, 0, 3, 'hands', { layer: 'gesture' });
     lastHandUntil = 0;
+    // exp3 类（脸红/钢盆/圈圈眼）是持久表达式，光清参数摘不掉，得主动 reset
+    if (phraseExprTimer) { clearTimeout(phraseExprTimer); phraseExprTimer = 0; }
+    clearModelExpression();
     hud('姿态复位');
     return true;
   }
