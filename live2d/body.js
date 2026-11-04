@@ -5,6 +5,7 @@ const MOUTH_ID = 'ParamMouthOpenY';
 
 let app = null;
 let model = null;
+let physSwing = 1;   // 「手感」面板里的动作幅度倍率（晃腰/摇尾巴等波形共用）
 let mouth = 0;          // 当前嘴张合 0..1
 let talkingUntil = 0;   // 说话到什么时候（时间戳）
 let talkSeed = Math.random() * 10;
@@ -76,8 +77,8 @@ const POSES = {
   '看右': { ch: 'head', set: { ParamEyeBallX: 0.85, ParamAngleX: 14, ParamAngleZ: -5 } },
   // 看下/看上：这套皮的头几乎不低头（ParamAngleY 推满只动 2.6% 像素），
   // 所以除了眼神和脖子，还得让整个人沉一点/提一点——`sink` 就是那个整体位移。
-  '看上': { ch: 'head', sink: -7, set: { ParamEyeBallY: 0.85, ParamAngleY: 12, AngleY: 18 } },
-  '看下': { ch: 'head', sink: 15, set: { ParamEyeBallY: -0.9, ParamAngleY: -18, AngleY: -30, ParamBodyAngleY: -6 } },
+  '看上': { ch: 'head', sink: -4, set: { ParamEyeBallY: 0.85, ParamAngleY: 12, AngleY: 18, ParamBodyAngleY: 5 } },
+  '看下': { ch: 'head', sink: 6, set: { ParamEyeBallY: -0.9, ParamAngleY: -18, AngleY: -30, ParamBodyAngleY: -11, ShoulderY: -5 } },
   // 歪头幅度：原来 ParamAngleZ=15，实际脸只斜了 4 度左右（这套皮对 Z 的形变很小），
   // 现在写满 22 再叠一点侧倾和脖子平移，肉眼才看得出「歪了」。
   '歪头': { ch: 'head', set: { ParamAngleZ: 30, ParamAngleX: 8, ParamBodyAngleZ: 8, AngleXbs: -8 } },
@@ -87,6 +88,18 @@ const POSES = {
   // 甩完 2.8 秒物理一接回来整只「啪」地回位——看着像全身都在动。其实我们的 ticker
   // 跑在 model.update 之后（LOW 优先级），尾巴参数每帧写得进去，根本不用摘物理。
   '摇尾巴': { ch: 'tail', wave: { ids: TAIL_IDS, amp: 11, hz: 1.2, ms: 2800, sign: 1 } },
+  // 来回晃腰：胯先动、上身晚半拍（相位差），裙摆的物理是拿 HipAngleZ/HipAngleX/ParamBodyAngleZ 当输入的，
+  // 所以裙子会被这一串带着甩起来——不是给它单独写一个「裙子在飘」的假动画。
+  '晃腰': {
+    ch: 'body',
+    wave: {
+      ids: ['HipAngleZ', 'LEGAngleZ2', 'HipAngleX', 'ParamBodyAngleZ', 'ShoulderZ', 'ShoulderY'],
+      amp: { HipAngleZ: 19, LEGAngleZ2: -13, HipAngleX: 5, ParamBodyAngleZ: 13, ShoulderZ: 5, ShoulderY: 2.2 },
+      phase: { HipAngleZ: 0, LEGAngleZ2: Math.PI, HipAngleX: 0.35, ParamBodyAngleZ: -0.55, ShoulderZ: -0.9, ShoulderY: 0.6 },
+      hz: 0.8,
+      ms: 4600
+    }
+  },
   '吐舌头': { ch: 'face', set: { TongueOut: 1, ParamMouthOpenY: 0.25 } },
   '张嘴': { ch: 'face', set: { ParamMouthOpenY: 0.8 } },
   '闭嘴': { ch: 'face', set: { ParamMouthOpenY: 0 }, holdMs: 800 },
@@ -97,10 +110,21 @@ const POSES = {
   '前倾': { ch: 'body', sink: 6, set: { ParamBodyAngleX: 14, ParamBodyAngleY: -8, ShoulderY: 6 } },
   '后仰': { ch: 'body', sink: -4, set: { ParamBodyAngleX: -14, ParamAngleY: 8, ShoulderY: -6 } },
   '侧身': { ch: 'body', set: { ParamBodyAngleZ: 16, HipAngleZ: 12, ParamBodyAngleX: 4 } },
-  '扭腰': { ch: 'body', set: { HipAngleZ: 20, ParamHipAngleZ: 14, ShoulderZ: -10, ParamBodyAngleZ: -8 } },
+  // 扭腰：以前是「扳一下就不动」的静态姿势，看不出在扭 → 改成慢速摆动（晃腰的温柔版）
+  '扭腰': {
+    ch: 'body',
+    wave: {
+      ids: ['HipAngleZ', 'LEGAngleZ2', 'HipAngleX', 'ParamBodyAngleZ', 'ShoulderZ'],
+      amp: { HipAngleZ: 12, LEGAngleZ2: -8, HipAngleX: 3, ParamBodyAngleZ: 8, ShoulderZ: 3 },
+      phase: { HipAngleZ: 0, LEGAngleZ2: Math.PI, HipAngleX: 0.35, ParamBodyAngleZ: -0.55, ShoulderZ: -0.9 },
+      hz: 0.55,
+      ms: 5200,
+    },
+  },
   '提肩': { ch: 'body', set: { ShoulderY: 22, ShoulderZ: 10 } },
   '沉肩': { ch: 'body', set: { ShoulderY: -22, ShoulderZ: -6 } },
-  '缩脖': { ch: 'body', sink: 8, set: { ShoulderY: 20, ParamAngleY: -12, AngleY: -14 } },
+
+  '缩脖': { ch: 'body', sink: 4, set: { ShoulderY: 20, ParamAngleY: -12, AngleY: -14, ParamBodyAngleY: -5 } },
   '并腿': { ch: 'body', set: { Param33: 1 } },
   // 鼓腮必须左右一起推（CheeckPuffL/R），只推 CheeckPuff 在网页尺寸下看不出来
   '鼓脸': { ch: 'face', set: { CheeckPuff: 1, CheeckPuffL: 0.9, CheeckPuffR: 0.9, Mouthpucker: 0.6, MouthPuckerWiden: 0.6, ParamMouthOpenY: 0.3, ParamMouthForm: 0.5 } },
@@ -220,6 +244,9 @@ const RELEASE_MS = 420;   // 姿态到期后再用这段时间把权重降到 0�
 const animBase = new Map();   // id → 动它之前的值
 let writtenIds = new Set();   // 上一帧我们写过的 id
 let releasing = new Set();    // 这一帧正在缓着回原值的 id
+// 活体层（站立时的重量感/二级动作）用的弹簧状态：id → {x, v}
+const lifeSpring = new Map();
+const lifeIds = new Set();
 // 表情与心情的共存规则（2026-11-03 定，用户选的方案 C）：
 //   表情是「短时覆盖」，心情是「底色」。表情默认活 25 秒，之后用 RELEASE_MS 淡回心情脸；
 //   期间如果心情剧变（v/a 跨过阈值），提前退场——「人难过着，脸还挂着笑」比掉表情更假。
@@ -316,7 +343,87 @@ async function boot() {
   model = await PIXI.live2d.Live2DModel.from(url, { autoInteract: false });
   app.stage.addChild(model);
   window.__model = model; // 调试用：控制台里查 drawable
-  window.__bodyBuild = 'v1.0-living'; // 用来确认页面到底加载了哪一版 body.js
+  window.__bodyBuild = 'v1.3-phys'; // 用来确认页面到底加载了哪一版 body.js
+
+  // ── 手感（物理阻尼）──────────────────────────────────────────────
+  // 模型自带 physics3.json 里，每个质点都有 mobility（跟手程度）和 delay（滞后），
+  // 它们决定裙子/头发/胸部「被带着走」的手感：mobility 越大越跟手，delay 越大越拖。
+  // 运行时结构不带名字，只能按每组的 output 目标参数名分类（SkirtLayerX1 / FrontHairX2 …）。
+  // 原始值存在质点自己的 __origMobility/__origDelay 上，任何调参都能原样还原。
+  const PHYS_CATS = [
+    ['skirt', '裙摆', /^(Skirt|Lace)/i],
+    ['hair', '头发', /^(Late.*Hair|FrontHair|SideHair|ShortPonytail)/i],
+    ['chest', '胸部', /^Chest/i],
+    ['ribbon', '丝带', /(Ribbon|Bow)/i],
+    ['sleeve', '袖子', /Sleeve/i],
+    ['tail', '尾巴', /Angle_Rotation/i],
+  ];
+  // 默认手感：比原厂稍微跟手一点点，但静止时基本不动
+  const PHYS_DEFAULT = {
+    skirt: { m: 1.12, d: 0.92 }, hair: { m: 1.12, d: 0.92 }, chest: { m: 1.12, d: 0.92 },
+    ribbon: { m: 1.12, d: 0.92 }, sleeve: { m: 1.12, d: 0.92 }, tail: { m: 1.05, d: 0.95 },
+    idle: 0.42,      // 静止时自动重心变化的幅度（1 = 之前那版明显晃）
+    swing: 1,        // 主动动作（晃腰/摇尾巴）的幅度
+  };
+  const physCfg = JSON.parse(JSON.stringify(PHYS_DEFAULT));
+  const physRig = model?.internalModel?.physics?._physicsRig;
+  const physGroups = (() => {
+    if (!physRig || !Array.isArray(physRig.settings)) return [];
+    const list = [];
+    for (const st of physRig.settings) {
+      const names = [];
+      for (let i = 0; i < (st.outputCount || 0); i += 1) {
+        const dst = physRig.outputs?.[st.baseOutputIndex + i]?.destination?.id;
+        if (dst) names.push(String(dst));
+      }
+      const key = names.join(' ');
+      let cat = null;
+      for (const [id, , test] of PHYS_CATS) { if (test.test(key)) { cat = id; break; } }
+      list.push({ st, names, key, cat });
+    }
+    return list;
+  })();
+  function applyPhysCfg(patch) {
+    if (patch && typeof patch === 'object') {
+      for (const [k, v] of Object.entries(patch)) {
+        if (k === 'idle' || k === 'swing') { physCfg[k] = Number(v); continue; }
+        if (!physCfg[k] || typeof v !== 'object') continue;
+        if (v.m !== undefined) physCfg[k].m = Number(v.m);
+        if (v.d !== undefined) physCfg[k].d = Number(v.d);
+      }
+    }
+    const counts = {};
+    for (const g of physGroups) {
+      if (!g.cat || !physRig) continue;
+      const { m, d } = physCfg[g.cat];
+      const c = counts[g.cat] || (counts[g.cat] = { groups: 0, points: 0 });
+      c.groups += 1;
+      for (let i = 0; i < (g.st.particleCount || 0); i += 1) {
+        const pt = physRig.particles[g.st.baseParticleIndex + i];
+        if (!pt) continue;
+        if (typeof pt.mobility === 'number') {
+          if (pt.__origMobility === undefined) pt.__origMobility = pt.mobility;
+          pt.mobility = Math.max(0, Math.min(1, pt.__origMobility * m));
+          c.points += 1;
+        }
+        if (typeof pt.delay === 'number') {
+          if (pt.__origDelay === undefined) pt.__origDelay = pt.delay;
+          pt.delay = Math.max(0.02, Math.min(2, pt.__origDelay * d));
+        }
+      }
+    }
+    return { cfg: physCfg, counts };
+  }
+  applyPhysCfg();
+  window.__phys = (patch) => applyPhysCfg(patch);
+  window.__physCfg = () => JSON.parse(JSON.stringify(physCfg));
+  window.__physInfo = () => ({
+    cfg: physCfg,
+    groups: physGroups.filter((g) => g.cat).length,
+    cats: PHYS_CATS.map(([id, label]) => ({
+      id, label, sample: physGroups.filter((g) => g.cat === id).map((g) => g.names[0]).slice(0, 3),
+    })),
+  });
 
   // 参数表从模型本身读（P0）：509 个 id + 各自的 min/max，写参数只认这里有的。
   // 以前是手写白名单，漏一个就表现为「写了没反应」，还容易误判成参数不存在。
@@ -510,6 +617,9 @@ async function boot() {
     if (!core) return;
     const now = Date.now();
     const t = (performance.now() - t0) / 1000;
+
+    // 情绪驱动的自发小动作（没人调她也会自己动一下）
+    if (!frozen) maybeSpontaneous(now);
 
     // 呼吸：胸口起伏 + 头肩极缓的摇摆 + 整个身子轻轻上下浮（像真在呼吸，不是定格）
     // frozen = 截图对拍模式：所有环境动画归零，只剩「我正在写的那一层」，A/B 才比得干净
@@ -718,6 +828,42 @@ async function boot() {
     }
     emotionPosture(core, busyIds);
 
+    // ── 活体层：站着也要像活的 ──────────────────────────────────────────────
+    // 三个来源叠加，都走二阶弹簧（略欠阻尼 → 到位时轻微过冲再稳住，「灵动」就来自这一点）：
+    //   ① 重心：髋部慢慢左右换、膝盖反向补偿，不然像根柱子杵着
+    //   ② 呼吸：肩线跟着上下、胸腔起伏
+    //   ③ 惯性：头转过去之后上半身晚一点跟过去（二级动作），比整只一起转自然
+    // 全部用加法写，不覆盖引擎/物理自己算的那部分；她明确摆了哪个部位就让位。
+    const lifeT = now / 1000;
+    const lifeSway = Math.sin(lifeT * 0.72) * 0.62 + Math.sin(lifeT * 0.31 + 1.7) * 0.38;
+    const lifeBr = Math.sin(lifeT * 1.15 - 0.6);
+    const lifeYaw = Number(focusAim.x) || 0;
+    // 幅度收着来：站着不动时只要「还在呼吸、重心没死」，不要一直明显晃。
+    // idleK 由「手感」面板的「静止幅度」控制（默认 0.42）。
+    const idleK = Number(physCfg.idle ?? 0.42);
+    const LIFE = [
+      ['HipAngleZ', lifeSway * 4.5 * idleK],
+      ['LEGAngleZ2', -lifeSway * 3.8 * idleK],
+      ['HipAngleX', lifeSway * 1.2 * idleK],
+      ['ShoulderY', lifeBr * 1.6 + lifeSway * 2.2 * idleK],
+      ['ShoulderZ', lifeSway * 3.0 * idleK],
+      ['ParamBodyAngleRX', lifeYaw * 0.22],
+      ['ParamBodyAngleZ', lifeSway * 1.6 * idleK],
+    ];
+    lifeIds.clear();
+    const LIFE_K = 130, LIFE_C = 15, LIFE_DT = 1 / 60;
+    const lifeGain = Number(window.__lifeGain ?? 1);   // 调参用：0 = 关掉活体层，1 = 正常
+    for (const [id, target0] of LIFE) {
+      if (busyIds.has(id)) continue;
+      const target = target0 * lifeGain;
+      let st = lifeSpring.get(id);
+      if (!st) { st = { x: target, v: 0 }; lifeSpring.set(id, st); }
+      st.v += ((target - st.x) * LIFE_K - st.v * LIFE_C) * LIFE_DT;
+      st.x += st.v * LIFE_DT;
+      frameAdds.set(id, (frameAdds.get(id) || 0) + st.x);
+      lifeIds.add(id);
+    }
+
     // 把这一帧「眼珠该在哪」记下来：姿态层写进去的、或者引擎自己算的，都算数。
     // 下一帧的 beforeModelUpdate 会把这两个值再写一次，盖过引擎的 updateFocus。
     const cEye = model?.internalModel?.coreModel;
@@ -827,9 +973,15 @@ function applyWaves() {
       const id = ids[i];
       if (!(id in w.base)) w.base[id] = Number(core.getParameterValueById(id)) || 0;
       const base = w.base[id];
-      // 尾巴六节越靠后越甩，看着像真的摆过去
-      const amp = w.amp * (ids.length > 1 ? 0.5 + i * 0.14 : 1);
-      const val = base + env * amp * Math.sin(2 * Math.PI * w.hz * p - i * 0.45);
+      // 尾巴六节越靠后越甩，看着像真的摆过去；
+      // 但腰腹这种链条要**各自指定幅度和相位**（胯先动、上身晚半拍），所以 amp/phase 可以是对象
+      const amp = (w.amp && typeof w.amp === 'object')
+        ? (Number(w.amp[id]) || 0)
+        : w.amp * (ids.length > 1 ? 0.5 + i * 0.14 : 1);
+      const phase = (w.phase && typeof w.phase === 'object')
+        ? (Number(w.phase[id]) || 0)
+        : -i * 0.45;
+      const val = base + env * amp * physSwing * Math.sin(2 * Math.PI * w.hz * p + phase);
       try { core.setParameterValueById(id, val); } catch (e) { /* ignore */ }
     }
   }
@@ -863,6 +1015,37 @@ function emotionPosture(core, busyIds) {
 
 // 待机动作整段停用：她说过「只让我的鱼来操控身体」，所以不再自己找小动作。
   // 想恢复的话，把 AUTONOMY 打开就行（下面 schedulePose / saccade 都看这个开关）。
+
+// 情绪驱动的「自发小动作」：跟 AUTONOMY 那套随机乱动不一样——
+// 它看的是 she 当前的心情（v 好坏 / a 激动），只有心情明显偏一边时才动一下。
+// 节奏很克制：35–70 秒一次，而且只有两种动作（心情好→晃腰短版；低落→沉一下肩）。
+// 有人正在调她、正在说话、有波形/姿态占位、页面藏着时都跳过。
+let nextSpontAt = 0;
+let spontCount = 0;
+let spontName = '';
+function maybeSpontaneous(now) {
+  if (!nextSpontAt) { nextSpontAt = now + 30000 + Math.random() * 20000; return; }
+  if (now < nextSpontAt) return;
+  nextSpontAt = now + 35000 + Math.random() * 35000;   // 35–70 秒
+  if (pinnedHead || now < talkingUntil + 800) return;
+  if (channelWaves.size || poseOverrides.size) return;
+  if (typeof document !== 'undefined' && document.hidden) return;
+  const v = Number(lastEmotion?.v) || 0;
+  const a = Number(lastEmotion?.a) || 0;
+  if (v > 0.25 || (a > 0.45 && v > -0.05)) {
+    spontName = '晃腰';
+    applyPose('晃腰', 2300 + Math.round(Math.random() * 600));
+  } else if (v < -0.25) {
+    spontName = '沉肩';
+    applyPose('沉肩', 3000);
+  } else {
+    return;   // 心情平平就老实待着——待机动作不堆量
+  }
+  spontCount += 1;
+}
+window.__spont = () => ({ n: spontCount, last: spontName, nextIn: Math.max(0, Math.round((nextSpontAt - Date.now()) / 1000)), v: Number(lastEmotion?.v) || 0, a: Number(lastEmotion?.a) || 0 });
+// 排障用：立刻按给定心情试一次（不用等 20 秒）
+window.__spontForce = (v = 0.8, a = 0.3) => { lastEmotion = { v: Number(v) || 0, a: Number(a) || 0, d: 0 }; nextSpontAt = Date.now() - 1; return true; };
 
   // 自己找点事做：隔一阵甩下尾巴、歪下头、瞟一眼别处——只有打开 AUTONOMY 才会跑
   const IDLE_POSES = ['看左', '看右', '看上', '看下', '摇尾巴', '吐舌头', '鼓脸', '开心', '歪头', '点头'];
@@ -1573,7 +1756,8 @@ function setParamMap(map, holdMs, prio = 2, ch = 'misc', opts = {}) {
 
 // 排障用：在控制台（或 ego_js）里看每一层还剩多少参数，
 // 例如 __bodyLayers() → "pose:12,expression:8"。定位「命令发出去但画面不动」时先看这个。
-window.__bodyLayers = () => [...layerParams].map(([k, m]) => `${k}:${m.size}`).join(',');
+window.__lifeOut = () => [...lifeIds].map((id) => id + '=' + ((lifeSpring.get(id) || {}).x || 0).toFixed(2)).join(' ');
+  window.__bodyLayers = () => [...layerParams].map(([k, m]) => `${k}:${m.size}`).join(',');
 
 // 把各层的当前目标汇总成一张「id → 什么时候到期」的表，供心跳/忙闲/复位使用。
 function syncOverrides() {
@@ -1672,6 +1856,7 @@ const POSE_ALIAS = {
   '下': '看下', '低头': '看下', '看下面': '看下',
   '侧头': '歪头', '头歪': '歪头',
   '尾巴': '摇尾巴', '甩尾巴': '摇尾巴', '摇尾': '摇尾巴',
+  '晃身子': '晃腰', '扭一扭': '晃腰', '摇一摇': '晃腰', '左右晃': '晃腰', '晃一晃': '晃腰', '扭扭腰': '晃腰',
   '舌头': '吐舌头', '吐舌': '吐舌头',
   '鼓腮': '鼓脸', '鼓腮帮子': '鼓脸', '生气': '鼓脸',
   '正常': '复位', '放下': '复位', '回来': '复位', '看镜头': '看向你',
@@ -1713,7 +1898,8 @@ function applyPose(name, holdMs) {
     channelWaves.set(ch, {
       ch,
       ids: pose.wave.ids.slice(),
-      amp: clampNum(pose.wave.amp, 8),
+      amp: (pose.wave.amp && typeof pose.wave.amp === 'object') ? { ...pose.wave.amp } : clampNum(pose.wave.amp, 8),
+      phase: pose.wave.phase ? { ...pose.wave.phase } : null,
       hz: clampNum(pose.wave.hz, 1.5),
       // 尾巴这类参数被物理演算每帧盖回去，甩的时候先短暂摘掉 physics
       noPhysics: !!pose.wave.noPhysics,
@@ -1910,6 +2096,12 @@ function handle(cmd) {
       hud('回到上次的样子');
     } catch (e) { hud('恢复现场出错：' + (e && e.message)); }
     return;
+  }
+  if (cmd.type === 'phys') {
+    // 「手感」面板：裙摆/头发/胸部… 的阻尼，以及静止/动作幅度
+    const r = window.__phys(cmd.cfg || {});
+    hud('手感已更新');
+    return r;
   }
   if (cmd.type === 'ping') { hud(`心跳 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`); return; }
   if (cmd.type === 'scale') { setScale(cmd.value); return; }

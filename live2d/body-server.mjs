@@ -1,4 +1,4 @@
-// Live2D 身体：本机渲染服务
+// 模型的身体：本机渲染服务
 //   静态文件：/vendor/*（渲染库）、/model/*（Live2D 模型资源，直接读原目录）
 //   控制接口：POST /cmd（她那边调用它来动这具身体）、GET /state
 //   WebSocket：/ws（页面连上来，服务端把命令转发过去）
@@ -19,7 +19,7 @@ const TOKEN = process.env.BODY_TOKEN || '';
 // 手机页面上打的字要进她的大脑：先落到同机 qq-agent 的 /api/inbox，
 // 由它当成一条「用户发来的 QQ 消息」处理。这里只负责把令牌和目标会话带上。
 const AGENT = process.env.BODY_AGENT || 'http://127.0.0.1:3210';
-const AGENT_CONFIG = process.env.BODY_AGENT_CONFIG || '/var/lib/qqagent/config.json';
+const AGENT_CONFIG = process.env.BODY_AGENT_CONFIG || '';
 let agentToken = '';
 let agentTokenAt = 0;
 
@@ -55,7 +55,7 @@ const MIME = {
 const clients = new Set();
 // 自拍请求：页面收到 {type:'selfie'} 后把 PNG dataUrl 从 WS 回传，这里按 id 等它
 const pendingSelfies = new Map();
-const SELFIE_DIR = process.env.BODY_SELFIE_DIR || path.join(os.tmpdir(), 'qqagent-selfie');
+const SELFIE_DIR = process.env.BODY_SELFIE_DIR || path.join(os.tmpdir(), 'live2d-body-selfie');
 let lastState = { expression: '', motion: '', text: '', at: 0 };
 let lastHb = null;
 let lastBounds = null;
@@ -86,6 +86,46 @@ function loadScene() {
 }
 let scene = loadScene();
 let sceneTimer = null;
+
+// ---- 手感（物理阻尼）：裙摆/头发/胸部… 的跟手与拖尾，以及静止/动作幅度 ----
+// 这些是「看起来像不像贴图」的关键参数，做成页面上的滑条，改完存这里，
+// 页面刷新 / 手机重连 / 服务重启都还认这套手感。
+const PHYS_FILE = process.env.BODY_PHYS || path.join(HERE, 'phys.json');
+const PHYS_DEFAULT = {
+  skirt: { m: 1.12, d: 0.92 }, hair: { m: 1.12, d: 0.92 }, chest: { m: 1.12, d: 0.92 },
+  ribbon: { m: 1.12, d: 0.92 }, sleeve: { m: 1.12, d: 0.92 }, tail: { m: 1.05, d: 0.95 },
+  idle: 0.42, swing: 1
+};
+const PHYS_CATS = ['skirt', 'hair', 'chest', 'ribbon', 'sleeve', 'tail'];
+function clampNum(v, lo, hi, dflt) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt;
+}
+function normPhysCfg(raw) {
+  const out = JSON.parse(JSON.stringify(PHYS_DEFAULT));
+  if (!raw || typeof raw !== 'object') return out;
+  for (const k of PHYS_CATS) {
+    const v = raw[k];
+    if (v && typeof v === 'object') {
+      out[k] = { m: clampNum(v.m, 0.2, 3, out[k].m), d: clampNum(v.d, 0.1, 3, out[k].d) };
+    }
+  }
+  out.idle = clampNum(raw.idle, 0, 2.5, out.idle);
+  out.swing = clampNum(raw.swing, 0, 2.5, out.swing);
+  return out;
+}
+function loadPhys() {
+  try { return normPhysCfg(JSON.parse(fs.readFileSync(PHYS_FILE, 'utf8'))); } catch { return normPhysCfg(null); }
+}
+let physCfg = loadPhys();
+let physTimer = null;
+function savePhys() {
+  if (physTimer) return;
+  physTimer = setTimeout(() => {
+    physTimer = null;
+    try { fs.writeFileSync(PHYS_FILE, JSON.stringify(physCfg, null, 2)); } catch (e) { log('phys 写不进去：' + (e && e.message)); }
+  }, 250);
+}
 function saveScene() {
   if (sceneTimer) return;
   sceneTimer = setTimeout(() => {
@@ -127,7 +167,7 @@ function send(payload) {
 
 // ---- 鍘嗗彶浼氳瘽锛氳濂硅嚜宸辩殑绉佽亰瀛樻。锛堟枃浠舵病鍙樺氨涓嶉噸澶嶈В鏋愶級----
 // ---- 心情：读 heart 插件的账本（页面顶栏与抽屉用）----
-const MOOD_FILE = process.env.BODY_MOOD || '/var/lib/qqagent/heart/mood.json';
+const MOOD_FILE = process.env.BODY_MOOD || '';
 const EMO_KEYS = ['joy', 'steady', 'sweet', 'worry', 'anxious', 'sad', 'jealous', 'desire'];
 function moodLabelOf(v) {
   if (v < 35) return '低沉';
@@ -155,7 +195,8 @@ function readMood() {
 }
 
 // 聊天记录文件：只给网页的「对话记录」抽屉用；设成空串就整块功能关掉。
-const HISTORY_FILE = process.env.BODY_HISTORY || '';
+const HISTORY_FILE = process.env.BODY_HISTORY
+  || '';
 let _histCache = { mtime: 0, rows: [] };
 
 function readHistory(limit) {
@@ -314,6 +355,31 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && p === '/state') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
     return res.end(JSON.stringify({ ok: true, clients: clients.size, lastState, lastHb, lastBounds, last: history.slice(-8) }));
+  }
+  // 手感面板：读取 / 保存物理阻尼设置
+  if (req.method === 'GET' && p === '/phys') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ ok: true, cfg: physCfg, cats: PHYS_CATS }));
+    return;
+  }
+  if (req.method === 'POST' && p === '/phys') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 4000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const j = JSON.parse(body || '{}');
+        physCfg = normPhysCfg({ ...physCfg, ...(j.cfg || j) });
+        savePhys();
+        const msg = JSON.stringify({ type: 'phys', cfg: physCfg });
+        for (const ws of clients) { try { ws.send(msg); } catch { /* ignore */ } }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, cfg: physCfg, clients: clients.size }));
+      } catch (e) {
+        res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) }));
+      }
+    });
+    return;
   }
   // 主进程把窗口在屏幕上的真实位置发过来 —— 截图裁切要用，从外面猜 GetWindowRect 会被 DPI 骗
   if (req.method === 'POST' && p === '/bounds') {
@@ -493,6 +559,7 @@ wss.on('connection', (ws, req) => {
   });
   ws.send(JSON.stringify({ type: 'hello', at: Date.now(), lastState }));
   try { ws.send(JSON.stringify({ type: 'scene', scene })); } catch { /* ignore */ }
+  try { ws.send(JSON.stringify({ type: 'phys', cfg: physCfg })); } catch { /* ignore */ }
   // 以前这里会把最近 3 条命令补发一遍（「她刚说完身体才醒」），但那是把 20 分钟前的动作
   // 也一起复活：断线重连一次，她会突然再摆一次很久以前的姿势、再弹一次旧气泡。
   // 现场（scene）已经覆盖姿态/表情/道具/大小/情绪/词表，够了，所以不再补发。
@@ -516,5 +583,5 @@ setInterval(() => {
 
 server.listen(PORT, HOST, () => {
   const keyed = TOKEN && HOST !== '127.0.0.1' ? '（要钥匙）' : '';
-  console.log(`[body] Live2D 身体服务听在 http://${HOST}:${PORT}${keyed}（模型目录 ${MODEL_DIR}）`);
+  console.log(`[body] 模型的身体听在 http://${HOST}:${PORT}${keyed}（模型目录 ${MODEL_DIR}）`);
 });
