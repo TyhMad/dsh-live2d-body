@@ -1,7 +1,7 @@
 {
   "id": "body",
   "name": "Live2D 身体",
-  "version": "0.6.4",
+  "version": "0.6.6",
   "description": "让她操控书房电脑上的 Live2D 身体：换表情、做动作、把她说的话显示成字幕并同步口型；别人说话时她也会抬头、换脸。",
   "main": "index.js",
   "enabledByDefault": false,

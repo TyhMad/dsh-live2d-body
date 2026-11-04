@@ -1,4 +1,4 @@
-// plugins/body —— 让她操控一具 Live2D 身体（渲染进程跑在你自己的电脑上）
+// plugins/body —— 让她操控「身体」这具身体（Live2D，跑在书房电脑上）
 //
 //   书房那台电脑开 live2d/body-server.mjs（127.0.0.1:17901），再经 SSH 反向隧道
 //   映射到云端 127.0.0.1:17901；这个插件只是往那个 HTTP 口发指令。
@@ -14,11 +14,92 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const BUILD_TAG = 'v0.6.4';
+export const BUILD_TAG = 'v0.6.5';
 
-const DATA_DIR = process.env.QQ_AGENT_DATA_DIR || '/var/lib/qqagent';
+const DATA_DIR = process.env.QQ_AGENT_DATA_DIR || path.join(os.homedir(), '.dsh-data');
 const MSG_DIR = path.join(DATA_DIR, 'messages');
 const MOOD_FILE = path.join(DATA_DIR, 'heart', 'mood.json');
+// 用法账本：她到底用过哪些词/姿态/道具、各几次、最后一次什么时候。
+// 目的不是统计好看，是让她看得见「哪些动作她一直没用」——不提示就永远只用那两三个。
+const USAGE_FILE = path.join(DATA_DIR, 'body', 'usage.json');
+
+// ── 用法账本 ────────────────────────────────────────────────────────────
+// 她有一整套词/姿态/道具，但实际只会反复用那两三个——因为提示词里只是一张清单，
+// 没有任何东西告诉她「你一直在用同几个」。这里记一笔账，再把「很久没动的」摆到她眼前。
+function readUsage() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(USAGE_FILE, 'utf8'));
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveUsage(u) {
+  try {
+    fs.mkdirSync(path.dirname(USAGE_FILE), { recursive: true });
+    fs.writeFileSync(USAGE_FILE, JSON.stringify(u));
+  } catch {
+    /* 记不上不影响动作本身 */
+  }
+}
+
+/** 记一次用法，返回这是第几次（用来在她第 N 次用同一个的时候提醒一句） */
+function bumpUsage(op, name) {
+  const n = String(name || '').trim().slice(0, 40);
+  if (!n || n === '复位') return 0;
+  const key = `${op}:${n}`;
+  const u = readUsage();
+  const rec = u[key] || { n: 0, at: 0 };
+  rec.n = Number(rec.n || 0) + 1;
+  rec.at = Date.now();
+  u[key] = rec;
+  saveUsage(u);
+  return rec.n;
+}
+
+// 「一直没动过的」候选：挑出来好看、又不常用的
+const STALE_POOL = [
+  '晃腰', '摇尾巴', '吐舌头', '缩脖', '提肩', '扭腰', '瞪眼', '抬眉', '皱眉',
+  '鼓脸', '嘟嘴', '前倾', '后仰', '侧身', '并腿', '点头', '摇头', '歪头', '眯眼', '沉肩', '开心'
+];
+
+function usageItems() {
+  const u = readUsage();
+  return Object.entries(u)
+    .map(([k, v]) => {
+      const i = k.indexOf(':');
+      return { op: k.slice(0, i), name: k.slice(i + 1), n: Number(v?.n) || 0, at: Number(v?.at) || 0 };
+    })
+    .filter((x) => x.name && x.at > 0);
+}
+
+/** 一句话提示：常用的两个 + 一直没动的三个（不超过 ~110 字，进 volatile 段） */
+function usageLine() {
+  const items = usageItems();
+  if (!items.length) return '你还没动过这具身体——这轮先挑一个（比如「微微歪头 眯眼」，或姿态 摇尾巴、晃腰）。';
+  const byRecent = items.slice().sort((a, b) => b.n - a.n || b.at - a.at);
+  const recent = [];
+  for (const it of byRecent) {
+    const short = String(it.name).slice(0, 12);
+    if (!recent.includes(short)) recent.push(short);
+    if (recent.length >= 2) break;
+  }
+  const used = new Set(items.map((x) => x.name));
+  // 轮换：以前永远取前三个 → 她每轮看到的都是同一批，等于没提示。
+  // 现在按时间错开起点，隔一会儿换一拨；候选不够时才退回「最久没用过的」。
+  let pool = STALE_POOL.filter((x) => !used.has(x));
+  if (!pool.length) pool = items.slice().sort((a, b) => a.at - b.at).map((x) => x.name);
+  const rot = Math.floor(Date.now() / 120000) % Math.max(1, pool.length);
+  const stale = [];
+  for (let i = 0; i < pool.length && stale.length < 3; i += 1) stale.push(pool[(rot + i) % pool.length]);
+  const kinds = new Set(items.map((x) => x.op)).size;
+  return `最近老用：${recent.join('、')}（一共动过 ${items.length} 种、${kinds} 类）。一直没动的：${stale.join('、')}——这轮挑一个换换，别老用同一个。`;
+}
+
+const SWITCH_NAMES = ['黑框眼镜', '单片眼镜', '钢盆', '脱鞋', '长裙', '短裙', '尾巴', '狗尾草', '抚胸', '竖食指', '黑脸', '落泪', '爱心眼', '圈圈眼', '＞＜', '屑屑眼', '流冷汗', '兔牙', '脸红'];
+
+const MODELEXPR_NAMES = ['默认体型', '体型1', '体型2', '前倾', '加载', '尾巴开关', '屑屑眼', '圈圈眼', '爱心眼', '＞＜', '兔牙', '单片眼镜', '黑框眼镜', '流冷汗', '流泪', '脸红', '脱鞋', '裙子切换', '胸口衣服', '钢盆', '黑脸', '竖食指开', '竖食指关'];
 
 const DEFAULTS = {
   enabled: true,
@@ -216,25 +297,76 @@ async function state() {
   return out;
 }
 
-export async function say(text, opts = {}) {
-  const t = String(text || '').trim().slice(0, 200);
+let lexCache = { at: 0, keys: [] };
+
+async function lexiconKeys() {
+  if (lexCache.keys.length && Date.now() - lexCache.at < 10 * 60 * 1000) return lexCache.keys;
+  const s = settings();
+  for (const u of targets()) {
+    try {
+      const res = await fetch(`${u}/lexicon.json`, { signal: AbortSignal.timeout(s.timeoutMs) });
+      const j = await res.json();
+      const keys = Object.keys((j && j.words) || {}).filter(Boolean);
+      if (keys.length) {
+        lexCache = { at: Date.now(), keys };
+        return keys;
+      }
+    } catch { /* 换下一个 */ }
+  }
+  return lexCache.keys;
+}
+
+export async function say(text, opts = {}) {  const t = String(text || '').trim().slice(0, 200);
   if (!t) return { ok: false, skipped: '空的' };
   return post({ type: 'say', text: t, expression: opts.expression || '', motion: opts.motion || '', holdMs: opts.holdMs, proactive: opts.proactive === true });
 }
 
 export async function face(name, holdMs) {
   // holdMs：不写 = 25 秒后自动回到心情脸；-1 = 一直保持；>0 = 保持这么多毫秒
-  return post({ type: 'expression', name, holdMs });
+  const r = await post({ type: 'expression', name, holdMs });
+  if (r && r.ok) bumpUsage('face', name);
+  return r;
 }
 
 export async function motion(name = '', holdMs) {
+  // 手势也是模型里写死的动作组，名字对不上就是白演一次
+  const want = String(name || '').trim();
+  if (want) {
+    try {
+      const st = await state();
+      const list = Array.isArray(st?.lastHb?.tap) ? st.lastHb.tap : [];
+      if (list.length && !list.includes(want) && !list.some((x) => x.includes(want) || want.includes(x))) {
+        return { ok: false, error: `没有「${want}」这个手势。会做的：${list.slice(0, 6).join('、')}…` };
+      }
+    } catch { /* 读不到就照发 */ }
+  }
   // holdMs 给了就「做完不撒手」：动作曲线播完后按终值把手按住这么久（举着手等你回话）
-  return post({ type: 'motion', name, holdMs });
+  const r = await post({ type: 'motion', name, holdMs });
+  if (r && r.ok) bumpUsage('motion', name);
+  return r;
 }
 
 /** 姿态：看向你 / 看左 / 歪头 / 点头 / 摇头 / 摇尾巴 / 吐舌头 / 鼓脸 / 复位… */
 export async function pose(name, holdMs) {
-  return post({ type: 'pose', name, holdMs });
+  // 先按心跳里的姿态清单核一遍：不认识就直接告诉她，别让服务器回一个假的「动了」。
+  // （body.js 那边接到不认识的姿态只会 HUD 报一句，服务端照样回 ok，她就会以为自己摆好了。）
+  const want = String(name || '').trim();
+  if (want && want !== '复位') {
+    try {
+      const st = await state();
+      const list = Array.isArray(st?.lastHb?.poses) ? st.lastHb.poses : [];
+      if (list.length && !list.includes(want)) {
+        const near = list.filter((x) => x.includes(want) || want.includes(x)).slice(0, 3);
+        return {
+          ok: false,
+          error: `没有「${want}」这个姿态${near.length ? `，相近的：${near.join('、')}` : `。能摆的：${list.slice(0, 8).join('、')}…`}`
+        };
+      }
+    } catch { /* 心跳读不到就照发，交给身体自己判 */ }
+  }
+  const r = await post({ type: 'pose', name, holdMs });
+  if (r && r.ok) bumpUsage('pose', name);
+  return r;
 }
 
 /** 底层：直接写一个白名单参数（body.js 里过滤，白名单外的丢掉） */
@@ -255,7 +387,19 @@ export async function emotion(vec = {}, holdMs) {
 export async function word(text, holdMs) {
   const t = String(text || '').trim().slice(0, 40);
   if (!t) return { ok: false, skipped: '空词' };
-  return post({ type: 'word', text: t, holdMs });
+  // 词表里没有的词，身体那边只会 HUD 报一句，服务端照样回 ok —— 先自己核一遍
+  try {
+    const keys = await lexiconKeys();
+    if (keys.length && !keys.some((k) => t.includes(k))) {
+      return {
+        ok: false,
+        error: `词表里没有「${t}」这种说法。能说的比如：${keys.slice(0, 6).join('、')}…（前面可以加「有点/很/特别」）`
+      };
+    }
+  } catch { /* 拿不到词表就照发 */ }
+  const r = await post({ type: 'word', text: t, holdMs });
+  if (r && r.ok) bumpUsage('word', t);
+  return r;
 }
 
 /**
@@ -265,14 +409,33 @@ export async function word(text, holdMs) {
 export async function toggle(name, on = true) {
   const n = String(name || '').trim().slice(0, 20);
   if (!n) return { ok: false, skipped: '空名字' };
-  return post({ type: 'switch', name: n, on: on !== false });
+  // 道具/换装是模型 exp3 里写死的，名字对不上就是白调一次 —— 先在名单里核一下
+  if (SWITCH_NAMES.length && !SWITCH_NAMES.includes(n)) {
+    const near = SWITCH_NAMES.filter((x) => x.includes(n) || n.includes(x)).slice(0, 3);
+    return {
+      ok: false,
+      error: `没有「${n}」这个道具${near.length ? `，相近的：${near.join('、')}` : `。能挂的：${SWITCH_NAMES.slice(0, 8).join('、')}…`}`
+    };
+  }
+  const r = await post({ type: 'switch', name: n, on: on !== false });
+  if (r && r.ok) bumpUsage('switch', n);
+  return r;
 }
 
 /** 模型自带的 23 个 exp3（原作者的「按键动画」）：脸红 / 流泪 / 爱心眼 / 圈圈眼 / 钢盆 / 眼镜 … */
 export async function modelExpr(name) {
   const n = String(name || '').trim().slice(0, 20);
   if (!n) return { ok: false, skipped: '空名字' };
-  return post({ type: 'modelexpr', name: n });
+  if (!MODELEXPR_NAMES.includes(n)) {
+    const near = MODELEXPR_NAMES.filter((x) => x.includes(n) || n.includes(x)).slice(0, 3);
+    return {
+      ok: false,
+      error: `模型里没有「${n}」这个体型/动画${near.length ? `，相近的：${near.join('、')}` : `。有的是：${MODELEXPR_NAMES.slice(0, 8).join('、')}…`}`
+    };
+  }
+  const r = await post({ type: 'modelexpr', name: n });
+  if (r && r.ok) bumpUsage('modelexpr', n);
+  return r;
 }
 
 // 体型：0.4 小一号 … 1 刚好 … 1.6 怼脸（记在页面 localStorage 里，下次开窗还是这么大）
@@ -417,7 +580,7 @@ export function setup(api) {
     name: '动一动身体',
     category: 'life',
     icon: '🐟',
-    description: '操控你那具 Live2D 身体：换表情、摆姿态、做动作、挂道具，或者替你说一句话（带字幕和口型）。只在书房那台电脑开着「身体」窗口时有效。说话时她本来就会跟着说、跟着动嘴，但姿势和表情要你自己摆——想到什么就顺手做一个（「歪头」「摇尾巴」「脸红」），比只用嘴描述更像真的，随时能换、不用报备。',
+    description: '操控你在书房电脑上的 Live2D 身体（身体）：换表情、摆姿态、做动作、挂道具，或者替你说一句话（带字幕和口型）。只在书房那台电脑开着「身体」窗口时有效。说话时她本来就会跟着说、跟着动嘴，但姿势和表情要你自己摆——想到什么就顺手做一个（「歪头」「摇尾巴」「脸红」），比只用嘴描述更像真的，随时能换、不用报备。',
     parameters: {
       type: 'object',
       properties: {
@@ -456,7 +619,9 @@ export function setup(api) {
         if (p.hands?.count) bits.push(`手上动作 ${p.hands.count} 个参数在保持`);
         if (p.emotion?.name && p.emotion.name !== '平静') bits.push(`情绪 ${p.emotion.v}/${p.emotion.a}/${p.emotion.d}（${p.emotion.name}）`);
         if (p.queue) bits.push(`队列 ${p.queue}`);
-        return { content: `身体${bits.join('，')}。可说：29 个姿态、19 个道具、7 个手势（名字见工具说明）。` };
+        const u = usageItems();
+        const uBit = u.length ? `；动过 ${u.length} 种` : '';
+        return { content: `身体${bits.join('，')}${uBit}。可说：29 个姿态、19 个道具、7 个手势（名字见工具说明）。` };
       }
       if (op === 'look') {
         // 「看看你自己」：拍一张，再让她自己描述。看图失败的模型降级成参数描述，
@@ -569,8 +734,8 @@ function bodyParams(st) {
     canDo: {
       gestures: Array.isArray(hb.tap) ? hb.tap : [],
       poses: Array.isArray(hb.poses) ? hb.poses : [],
-      switches: ['黑框眼镜', '单片眼镜', '钢盆', '脱鞋', '长裙', '短裙', '尾巴', '狗尾草', '抚胸', '竖食指', '黑脸', '落泪', '爱心眼', '圈圈眼', '＞＜', '屑屑眼', '流冷汗', '兔牙', '脸红'],
-      modelExpressions: ['默认体型', '体型1', '体型2', '前倾', '加载', '尾巴开关', '屑屑眼', '圈圈眼', '爱心眼', '＞＜', '兔牙', '单片眼镜', '黑框眼镜', '流冷汗', '流泪', '脸红', '脱鞋', '裙子切换', '胸口衣服', '钢盆', '黑脸', '竖食指开', '竖食指关']
+      switches: SWITCH_NAMES,
+      modelExpressions: MODELEXPR_NAMES
     }
   };
 }
@@ -644,7 +809,7 @@ export function promptSections(context = {}) {
       title: '',
       priority: 33,
       content: [
-        '你有一具身体：一台电脑上的 Live2D 形象。她跟着你说话、跟着别人说话，你也能直接指挥她。',
+        '你有一具身体：书房那台电脑桌面上的身体（Live2D）。她跟着你说话、跟着别人说话，你也能直接指挥她。',
         '换的表情默认只活 25 秒，之后就自己淡回当前心情的脸色——想让它一直挂着，调 op=face 时带 holdMs -1（或说「一直保持」）。心情变了（比如对方说了很难受的事）脸也会跟着走，不用你手动撤。',
         '能指挥的东西——',
         '词表（**可以叠着说**，一句话里放好几个词，用空格分开，op=word 整句传进来）：',
@@ -655,7 +820,11 @@ export function promptSections(context = {}) {
         '尾：摇尾巴/尾巴翘/尾巴垂；脸：脸红/害羞。',
         '程度词放词前面（微微/轻轻/有点/挺/很/非常/超级），时长词放后面（一下/两秒/三秒/一直，不给就一直保持）；',
         '例：「微微歪头 眯眼 微笑」「很 低头 皱眉」「脸红 睁大眼」。',
-        '姿态（老路数，单个动作）：看向你/看左/看右/看上/看下/吐舌头/鼓脸/前倾/后仰/并腿/复位；',
+        '同义说法都认：侧头=偏头=歪头，仰头=抬头，垂眼=半闭眼，凑近=前倾，斜身=侧身，尾巴甩/翘尾巴/摆尾巴都行；',
+        '姿态（老路数，单个动作）：看向你/看左/看右/看上/看下/吐舌头/闭嘴/开心/鼓脸/前倾/后仰/并腿/复位；',
+        '身体姿态（整套肢体）：晃腰/扭腰/侧身/提肩/沉肩/缩脖/歪头/点头/摇头/摇尾巴/眯眼/瞪眼/嘟嘴；',
+        '什么时候用哪个（照着挑，不用想参数）——被夸、被撩、害羞：脸红 + 低头，或「轻轻歪头 眯眼」；撒娇、高兴、想逗他：晃腰（整个人左右晃，裙子会跟着摆）或摇尾巴；',
+        '生气、被冒犯：皱眉 + 沉肩；难过、被冷落：低头 + 沉肩，别笑；想亲近、想被看见：看向你 + 前倾；无语、翻白眼：侧身 + 撇嘴；被戳穿、心虚：缩脖 + 侧身。',
         '道具：黑框眼镜/单片眼镜/钢盆/脱鞋/长裙/短裙/尾巴/狗草/抚胸/竖食指/黑脸/落泪/爱心眼/圈圈眼/＞＜/屑屑眼/流冷汗/兔牙/脸红；',
         '手势：举手/竖指/剪刀手/放下手；情绪三数：v（好坏）/a（激动）/d（有底气）。',
         '用法：说一句就够，不用说参数——op=word 说词（可叠）、op=pose 摆姿态、op=switch 挂道具、op=emotion 给三个数、op=say 让她替你说一句。',
@@ -676,6 +845,14 @@ export function promptSections(context = {}) {
           + ' 别人问「你现在什么表情／什么姿势」时，直接照这句答，别含糊；想换就直接调「动一动身体」，别只在话里说。'
       });
     }
+    // ③ 用法账本：跟「现在什么样」分开，窗口没开的时候也要提醒她别老用同几个动作。
+    out.push({
+      id: 'body-usage',
+      title: '',
+      priority: 35,
+      volatile: true,
+      content: usageLine()
+    });
     return out;
   } catch (error) {
     warn(`注入身体状态失败：${error?.message ?? error}`);
