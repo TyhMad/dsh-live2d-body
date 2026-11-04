@@ -71,7 +71,7 @@ for (const id of HAND_PARAMS) POSE_PARAMS.add(id);
 
 // 一句人话 → 一组参数。她只要说「歪头」就行，不用知道参数名。
 const POSES = {
-  '看向你': { ch: 'head', set: { ParamEyeBallX: 0, ParamEyeBallY: 0.1, ParamAngleX: 0, ParamAngleZ: 0 } },
+  '看向你': { ch: 'head', pin: true, set: { ParamEyeBallX: 0, ParamEyeBallY: 0.02, ParamAngleX: 0, ParamAngleY: 0, ParamAngleZ: 0, ParamBodyAngleX: 0, ParamBodyAngleZ: 0 } },
   '看左': { ch: 'head', set: { ParamEyeBallX: -0.85, ParamAngleX: -14, ParamAngleZ: 5 } },
   '看右': { ch: 'head', set: { ParamEyeBallX: 0.85, ParamAngleX: 14, ParamAngleZ: -5 } },
   // 看下/看上：这套皮的头几乎不低头（ParamAngleY 推满只动 2.6% 像素），
@@ -104,7 +104,8 @@ const POSES = {
   '并腿': { ch: 'body', set: { Param33: 1 } },
   // 鼓腮必须左右一起推（CheeckPuffL/R），只推 CheeckPuff 在网页尺寸下看不出来
   '鼓脸': { ch: 'face', set: { CheeckPuff: 1, CheeckPuffL: 0.9, CheeckPuffR: 0.9, Mouthpucker: 0.6, MouthPuckerWiden: 0.6, ParamMouthOpenY: 0.3, ParamMouthForm: 0.5 } },
-  '眯眼': { ch: 'face', set: { EyeSmile: 1, ParamEyeLOpen: 0.45, ParamEyeROpen: 0.45 } },
+  // 眯眼只推眼睛开合在网页尺寸下只有 2.7% 像素变化 → 叠笑眼、压眉、嘴角上扬
+  '眯眼': { ch: 'face', set: { EyeSmile: 1, ParamEyeLOpen: 0.32, ParamEyeROpen: 0.32, ParamBrowLY: 0.45, ParamBrowRY: 0.45, ParamMouthForm: 0.55 } },
   '瞪眼': { ch: 'face', set: { ParamEyeLOpen: 1, ParamEyeROpen: 1, BrowInnerUp: 0.8, ParamBrowLY: 0.6, ParamBrowRY: 0.6 } },
   '抬眉': { ch: 'face', set: { ParamBrowLY: 1, ParamBrowRY: 1, BrowInnerUp: 0.5 } },
   '皱眉': { ch: 'face', set: { ParamBrowLAngle: 1, ParamBrowRAngle: 1, BrowInnerUp: -0.6 } },
@@ -182,6 +183,9 @@ const gazeNow = { x: 0, y: 0 };
 let lastMouseAt = 0;             // 鼠标很久没动就自己东张西望，否则眼神永远钉在上次那个点
 let mouseNX = 0;                 // 鼠标在窗口里的归一化位置（-1 左 … 1 右）
 let mouseNY = 0;
+let aimSource = 'none';          // 最近一次视线来源：mouse / touch / tilt
+let tiltOn = false;              // 重力感应跟随是否打开（手机上要用户点一下才允许）
+let lastTiltAt = 0;
 let aimX = 0;                    // 平滑后的转向量，直接喂给头/身体的旋转参数
 let aimY = 0;
 let focusBlend = 0;              // 0=自发环视 1=鼠标跟随，中间是过渡（硬切换会让头「啪」地弹回去）
@@ -194,6 +198,13 @@ let tickerFps = 0;               // 最近一秒真实帧率（排查「拖动�
 let framesInWindow = 0;          // 这一秒里画了多少帧（tickerFps 的来源）
 let rendererKind = '';           // 页面最后拿到的是 webgl 还是 canvas2d
 let lastPose = { name: '', until: 0 };   // 最近一次姿态（回执用）
+// 「看向你」这类把整颗头钉住的姿态：钉住之后不许鼠标跟随再掰头，也不许自发环视换落点。
+// 以前只钉了 ParamAngleX/Z，结果头被 FocusController 慢慢转走、眼神在飘——她说「看着我」，
+// 画面上却像在看别处。
+let pinnedHead = false;
+// 输出平滑：每个参数记住上一帧真正写出去的值，朝目标缓动过去。
+// 以前是「这一帧算出来就直接写」，所以换姿态、表情到期都是硬切（看着像掉帧）。
+const smoothOut = new Map();
 let lastHandUntil = 0;                   // 手被「按住」到什么时候（回执用）
 let holdDbg = '';                        // 「保持」这条链路走到哪一步了（排障用）
 let lastExpr = '';               // 当前表情（回执用）
@@ -208,6 +219,7 @@ const RELEASE_MS = 420;   // 姿态到期后再用这段时间把权重降到 0�
 // 于是脸停在最后一个值上（表情到期了还笑着）。这里记下原值，撤层时写回去一次。
 const animBase = new Map();   // id → 动它之前的值
 let writtenIds = new Set();   // 上一帧我们写过的 id
+let releasing = new Set();    // 这一帧正在缓着回原值的 id
 // 表情与心情的共存规则（2026-11-03 定，用户选的方案 C）：
 //   表情是「短时覆盖」，心情是「底色」。表情默认活 25 秒，之后用 RELEASE_MS 淡回心情脸；
 //   期间如果心情剧变（v/a 跨过阈值），提前退场——「人难过着，脸还挂着笑」比掉表情更假。
@@ -304,7 +316,7 @@ async function boot() {
   model = await PIXI.live2d.Live2DModel.from(url, { autoInteract: false });
   app.stage.addChild(model);
   window.__model = model; // 调试用：控制台里查 drawable
-  window.__bodyBuild = 'v0.9-eyehook'; // 用来确认页面到底加载了哪一版 body.js
+  window.__bodyBuild = 'v1.0-living'; // 用来确认页面到底加载了哪一版 body.js
 
   // 参数表从模型本身读（P0）：509 个 id + 各自的 min/max，写参数只认这里有的。
   // 以前是手写白名单，漏一个就表现为「写了没反应」，还容易误判成参数不存在。
@@ -348,11 +360,14 @@ async function boot() {
   } catch (e) { /* 拿不到就算了，后面也还有 clearPose 兜底 */ }
 
   // 鼠标跟随：眼珠朝鼠标转，头连身体也一起转（幅度比之前大，看着像「盯着你」）
-  window.addEventListener('mousemove', (e) => {
-    if (!model) return;
-    const x = Math.max(-1, Math.min(1, (e.clientX / window.innerWidth) * 2 - 1));
-    const y = Math.max(-1, Math.min(1, (e.clientY / window.innerHeight) * 2 - 1));
+  // 手机上没有鼠标，所以这里做成「任意指向源」：鼠标移动 / 手指按住 / 重力感应倾斜，
+  // 都换算成同一个归一化坐标，走路和手机用的是同一套跟随逻辑。
+  const aimAt = (clientX, clientY, src) => {
+    if (!model || pinnedHead) return;
+    const x = Math.max(-1, Math.min(1, (clientX / window.innerWidth) * 2 - 1));
+    const y = Math.max(-1, Math.min(1, (clientY / window.innerHeight) * 2 - 1));
     lastMouseAt = Date.now();
+    aimSource = src;
     mouseNX = x;
     mouseNY = y;
     gazeTarget.x = Math.max(-0.95, Math.min(0.95, x * 0.95));
@@ -362,7 +377,65 @@ async function boot() {
     const fx = Math.max(-1, Math.min(1, x * 0.9 + EYE_BIAS.x));
     const fy = Math.max(-1, Math.min(1, -y * 0.6 + EYE_BIAS.y));
     try { model.focus(fx, fy); } catch (e) { /* ignore */ }
-  });
+  };
+  window.addEventListener('mousemove', (e) => aimAt(e.clientX, e.clientY, 'mouse'));
+  // 触屏：手指按下的地方就是她在看的地方（pointerType 为 touch/pen 才走这条，鼠标不会重复触发）
+  const onTouchAim = (e) => {
+    if (!e.isPrimary && e.touches && e.touches.length) return;
+    const p = e.touches?.[0] || e;
+    if (p.clientX === undefined) return;
+    aimAt(p.clientX, p.clientY, 'touch');
+  };
+  window.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'mouse') onTouchAim(e); }, { passive: true });
+  window.addEventListener('pointermove', (e) => { if (e.pointerType !== 'mouse' && e.buttons) onTouchAim(e); }, { passive: true });
+  window.addEventListener('touchmove', (e) => { if (e.touches?.length) onTouchAim(e); }, { passive: true });
+
+  // 手机：倾斜机身就当她在转头看你（gamma = 左右倾，beta = 前后倾）。
+  // iOS 需要用户手势里调 DeviceOrientationEvent.requestPermission()，所以不自动开，
+  // 由下面那个「摇一摇她」按钮触发；桌面端不会出现这个按钮。
+  const tiltHandler = (e) => {
+    if (!tiltOn || !model) return;
+    const now = Date.now();
+    if (now - lastTiltAt < 40) return;
+    lastTiltAt = now;
+    const g = Number(e.gamma) || 0;
+    const b = Number(e.beta) || 0;
+    const dead = (v) => (Math.abs(v) < 0.06 ? 0 : v);
+    const nx = dead(Math.max(-1, Math.min(1, g / 28)));
+    const ny = dead(Math.max(-1, Math.min(1, (b - 55) / 30)));
+    const cx = window.innerWidth * (0.5 + nx * 0.45);
+    const cy = window.innerHeight * (0.5 + ny * 0.45);
+    aimAt(cx, cy, 'tilt');
+  };
+
+  const startTilt = async () => {
+    try {
+      const DOE = window.DeviceOrientationEvent;
+      if (!DOE) return false;
+      if (typeof DOE.requestPermission === 'function') {
+        const s = await DOE.requestPermission();
+        if (s !== 'granted') return false;
+      }
+      if (!tiltOn) { window.addEventListener('deviceorientation', tiltHandler, true); tiltOn = true; }
+      return true;
+    } catch (e) { return false; }
+  };
+  window.__enableTilt = startTilt;
+
+  if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) {
+    const btn = document.createElement('button');
+    btn.id = 'tiltBtn';
+    btn.textContent = '摇一摇她';
+    btn.style.cssText = 'position:fixed;right:14px;bottom:76px;z-index:40;padding:8px 14px;border-radius:999px;'
+      + 'border:1px solid rgba(140,190,255,.45);background:rgba(20,32,56,.82);color:#dce8ff;'
+      + 'font:13px/1 system-ui,-apple-system,"PingFang SC",sans-serif;backdrop-filter:blur(6px);';
+    btn.addEventListener('click', async () => {
+      const ok = await startTilt();
+      btn.textContent = ok ? '倾斜手机试试' : '这台设备不支持';
+      if (ok) setTimeout(() => { btn.style.opacity = '0.35'; btn.textContent = '跟随中…'; }, 1500);
+    });
+    document.body.appendChild(btn);
+  }
 
   // 没人理她的时候自己东张西望（2~4 秒换一次落点），不然眼珠永远钉在上一次鼠标停的地方，
   // 看着就是「眼神空洞、像贴图」。小幅扫视任何时候都开着（这是活物的基本体征）；
@@ -375,7 +448,7 @@ async function boot() {
   };
   const saccade = () => {
     setTimeout(() => {
-      if (!frozen && !eyePinned() && Date.now() - lastMouseAt > 2500) {
+      if (!frozen && !pinnedHead && !eyePinned() && Date.now() - lastMouseAt > 2500) {
         const r = Math.random();
         const biasX = 0.12;
         if (autonomy && r < 0.16) {
@@ -460,7 +533,7 @@ async function boot() {
     // 两个驱动：鼠标跟随时由 FocusController 算头/身角度；没人理会时用很慢的自发环视。
     // 以前是硬切换——鼠标一停满 4 秒，头就从「被鼠标掰过去的角度」瞬间弹回中立位，
     // 看着就是「突然向右上看，又突然复位」。现在两条都在算，按 focusBlend 平滑过渡。
-    const focusActive = now - lastMouseAt < 4000;
+    const focusActive = (now - lastMouseAt < 4000) && !pinnedHead;
     focusBlend += ((focusActive ? 1 : 0) - focusBlend) * 0.10;
     const fb = Math.max(0, Math.min(1, focusBlend));
     // 只在 focus 活着的时候读它算出来的值（它每帧在 model.update 里写绝对值），
@@ -470,10 +543,13 @@ async function boot() {
         const v = Number(core.getParameterValueById(id)) || 0;
         return Math.max(-30, Math.min(30, v * k));
       };
-      focusAim.x = amp('ParamAngleX', 2.2);
-      focusAim.y = amp('ParamAngleY', 2.0);
-      focusAim.z = amp('ParamAngleZ', 1.6);
-      focusAim.bx = amp('ParamBodyAngleX', 2.0);
+      // 这套皮的 ParamAngle* 在画面上很钝（实测推 30 度只有 2% 像素变化），
+      // FocusController 自己算出来的角度又只有一两度 → 乘 2 还是看不出来。
+      // 所以这里放大到 6/5/3.5 倍，让「头转过去」这件事真的看得见。
+      focusAim.x = amp('ParamAngleX', 6.0);
+      focusAim.y = amp('ParamAngleY', 5.0);
+      focusAim.z = amp('ParamAngleZ', 3.5);
+      focusAim.bx = amp('ParamBodyAngleX', 4.0);
     }
     // 自发环视那条永远在算（幅度小、周期长）
     const aimTX = Math.sin(t * 0.23) * 0.3;
@@ -574,15 +650,31 @@ async function boot() {
         if (acc.den <= 0) continue;
         const target = acc.num / acc.den;
         const w = Math.min(1, acc.den);
-        set(id, acc.base * (1 - w) + target * w);
+        const want = acc.base * (1 - w) + target * w;
+        // 缓动到目标（嘴不缓，否则说话像含着东西）
+        const prev = smoothOut.has(id) ? smoothOut.get(id) : want;
+        const k = id === MOUTH_ID ? 1 : 0.28;
+        const sv = prev + (want - prev) * k;
+        smoothOut.set(id, Math.abs(want - sv) < 0.0015 ? want : sv);
+        set(id, Math.abs(want - sv) < 0.0015 ? want : sv);
       }
-      // 层里已经没有的 id：把参数还回原值（只还一次），否则脸会停在最后一个表情上
+      // 层里已经没有的 id：缓着回原值（不是啪一下），回得差不多才放手
       for (const id of writtenIds) {
         if (mix.has(id)) continue;
-        set(id, animBase.has(id) ? animBase.get(id) : 0);
-        animBase.delete(id);
+        const base = animBase.has(id) ? animBase.get(id) : 0;
+        const prev = smoothOut.has(id) ? smoothOut.get(id) : base;
+        const sv = prev + (base - prev) * 0.20;
+        if (Math.abs(sv - base) < 0.004) {
+          set(id, base);
+          smoothOut.delete(id);
+          animBase.delete(id);
+        } else {
+          set(id, sv);
+          releasing.add(id);
+        }
       }
-      writtenIds = new Set(mix.keys());
+      writtenIds = new Set([...mix.keys(), ...releasing]);
+      releasing.clear();
       // 表情层空了（自然到期 / 被心情剧变顶掉）→ 回执也跟着回到「心情」，别让她查状态时
       // 还被告知「开心」，而脸上已经是心情的颜色。
       const exprAfter = layerParams.get('expression');
@@ -672,6 +764,15 @@ function flushWrites() {
   if (frameWrites.has('ParamEyeBallX') && frameWrites.has('ParamEyeBallY')) {
     eyeWant = { x: Number(frameWrites.get('ParamEyeBallX')), y: Number(frameWrites.get('ParamEyeBallY')) };
   }
+  // 排障用：flush 到底写进去了没有（写完立刻回读一次，控制台可查 window.__bodyFlush）
+  try {
+    window.__bodyFlush = {
+      n: frameWrites.size,
+      puff: core.getParameterValueById('CheeckPuff'),
+      mf: core.getParameterValueById('ParamMouthForm'),
+      z: core.getParameterValueById('ParamAngleZ')
+    };
+  } catch (e) { /* ignore */ }
   frameWrites.clear();
   frameAdds.clear();
 }
@@ -1218,9 +1319,9 @@ function applyExpression(name, holdMs) {
     // 为什么不再默认常驻：心情桥每隔几秒推一次 v/a/d，脸一直笑、人却在难过，会明显脱节。
     const raw = Number(holdMs);
     const keep = Number.isFinite(raw) && raw < 0 ? 0 : (raw > 0 ? raw : EXPR_IMPLICIT_MS);
-    // 换表情先把这层清空：不然上一套表情独有的参数（比如笑眼的 EyeSmile）会一直挂着，
-    // 和新表情拼成「一半笑一半难过」的脸。
-    layerOf('expression').clear();
+    // 换表情先把「脸」这个槽位清空：不然上一套表情独有的参数（比如笑眼的 EyeSmile）
+    // 会一直挂着，和新表情拼成「一半笑一半难过」的脸；顺带把互斥的脸部姿态（眯眼/嘟嘴）也摘掉。
+    clearFaceSlot();
     // 放独立的一层（优先级 3 > 情绪的 2）：心情桥推过来的 v/a/d 每几秒就会重写「情绪」层，
     // 如果表情也放那层，她刚摆好的脸会被心情洗掉——她抱怨过「表情保持不了」就是这个。
     const n = setParamMap(emo, keep, 3, 'face', { layer: 'expression' });
@@ -1470,6 +1571,10 @@ function setParamMap(map, holdMs, prio = 2, ch = 'misc', opts = {}) {
   return n;
 }
 
+// 排障用：在控制台（或 ego_js）里看每一层还剩多少参数，
+// 例如 __bodyLayers() → "pose:12,expression:8"。定位「命令发出去但画面不动」时先看这个。
+window.__bodyLayers = () => [...layerParams].map(([k, m]) => `${k}:${m.size}`).join(',');
+
 // 把各层的当前目标汇总成一张「id → 什么时候到期」的表，供心跳/忙闲/复位使用。
 function syncOverrides() {
   poseOverrides.clear();
@@ -1532,7 +1637,32 @@ function clearPose() {
   channelWaves.clear();
   actionQueue.length = 0;
   bodySinkTarget = 0;
+  pinnedHead = false;
   restorePhysics();
+}
+
+// 脸只有一个槽位。
+// 以前「眯眼」和「瞪眼」、「嘟嘴」和「生气」能同时挂在不同层里，
+// 混合后互相抢 ParamEyeLOpen / ParamMouthForm，看起来就是脸部抽搐、一半笑一半哭。
+// 现在任何新的脸部动作（表情 / 眯眼 / 嘟嘴 / 吐舌头 / 词表里的眉嘴眼）都会先把旧的脸摘掉；
+// 身体类（歪头、摇尾巴、举手）是另一个槽位，互不影响——「歪头 + 生气」仍然能同时成立。
+function clearFaceSlot() {
+  let n = 0;
+  for (const m of layerParams.values()) {
+    for (const [id, o] of m) {
+      if (o && o.ch === 'face') { m.delete(id); n += 1; }
+    }
+  }
+  if (n) {
+    poseOverrides.clear();
+    for (const m of layerParams.values()) {
+      for (const [id, o] of m) {
+        const prev = poseOverrides.get(id);
+        if (!prev || o.prio >= prev.prio) poseOverrides.set(id, { until: o.until, prio: o.prio || 0, ch: o.ch, layer: o.value !== undefined });
+      }
+    }
+  }
+  return n;
 }
 
 const POSE_ALIAS = {
@@ -1596,6 +1726,10 @@ function applyPose(name, holdMs) {
   }
   // 默认常驻：她摆一个姿态就一直摆着，直到换下一个或喊复位（原话「说了就掐，没说就一直」）
   const ms = hold > 0 ? hold : 0;
+  // 脸部姿态（眯眼/瞪眼/嘟嘴/鼓脸/开心/吐舌头…）独占脸的槽位，避免和上一个打架
+  if (pose.ch === 'face') clearFaceSlot();
+  // 「看向你」这类：钉住整颗头，鼠标跟随和自发环视都不许再动它
+  pinnedHead = !!pose.pin;
   const n = setParamMap(pose.set || {}, ms, 3, pose.ch || 'head', { layer: 'pose' });
   if (n) lastPose = { name: key, until: ms > 0 ? Date.now() + Math.min(60000, ms) : 0 };
   // 低头/抬头要靠整体位移补（脸上看不出来），其它姿态不沉
