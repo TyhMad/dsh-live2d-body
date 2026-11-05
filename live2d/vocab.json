@@ -352,8 +352,8 @@
       "shoulder_up": -0.7
     },
     "眯眼": {
-      "eye_open": -0.7,
-      "eye_smile": 0.5
+      "eye_open": -0.45,
+      "eye_smile": 0.3
     },
     "闭眼": {
       "eye_open": -1

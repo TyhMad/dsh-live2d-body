@@ -129,7 +129,8 @@ const POSES = {
   // 鼓腮必须左右一起推（CheeckPuffL/R），只推 CheeckPuff 在网页尺寸下看不出来
   '鼓脸': { ch: 'face', set: { CheeckPuff: 1, CheeckPuffL: 0.9, CheeckPuffR: 0.9, Mouthpucker: 0.6, MouthPuckerWiden: 0.6, ParamMouthOpenY: 0.3, ParamMouthForm: 0.5 } },
   // 眯眼只推眼睛开合在网页尺寸下只有 2.7% 像素变化 → 叠笑眼、压眉、嘴角上扬
-  '眯眼': { ch: 'face', set: { EyeSmile: 1, ParamEyeLOpen: 0.32, ParamEyeROpen: 0.32, ParamBrowLY: 0.45, ParamBrowRY: 0.45, ParamMouthForm: 0.55 } },
+  // 但别拉满：眼睛留一半开、笑眼半成、眉和嘴角只带一点，否则像挤眉弄眼
+  '眯眼': { ch: 'face', set: { EyeSmile: 0.55, ParamEyeLOpen: 0.55, ParamEyeROpen: 0.55, ParamBrowLY: 0.2, ParamBrowRY: 0.2, ParamMouthForm: 0.28 } },
   '瞪眼': { ch: 'face', set: { ParamEyeLOpen: 1, ParamEyeROpen: 1, BrowInnerUp: 0.8, ParamBrowLY: 0.6, ParamBrowRY: 0.6 } },
   '抬眉': { ch: 'face', set: { ParamBrowLY: 1, ParamBrowRY: 1, BrowInnerUp: 0.5 } },
   '皱眉': { ch: 'face', set: { ParamBrowLAngle: 1, ParamBrowRAngle: 1, BrowInnerUp: -0.6 } },
