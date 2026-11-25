@@ -1,4 +1,4 @@
-// 模型的身体：本机渲染服务
+// 大肥鱼的身体：本机渲染服务
 //   静态文件：/vendor/*（渲染库）、/model/*（Live2D 模型资源，直接读原目录）
 //   控制接口：POST /cmd（她那边调用它来动这具身体）、GET /state
 //   WebSocket：/ws（页面连上来，服务端把命令转发过去）
@@ -6,11 +6,61 @@ import http from 'node:http';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const MODEL_DIR = process.env.LIVE2D_MODEL_DIR || path.join(HERE, 'model');
+
+// ── 页面代码的版本（build）───────────────────────────────────────────────
+// 这个服务换 body.js 是不重启的（静态文件），但**已经开着的页面还在跑老脚本**：
+// 新姿态不认、新词表没有、心跳里的 poses 只有 33 个 —— 而她在那边看到的是「没这个姿态」。
+// 以前每次改完都要等人手动刷新一次。现在服务端自己盯着 body.js：文件一变，
+// 就按 WebSocket 让所有开着的页面自己重载（重载后 G4 会把姿态/词表/道具补回来）。
+function buildOf(file) {
+  try {
+    return crypto.createHash('md5').update(fs.readFileSync(file)).digest('hex');
+  } catch { return ''; }
+}
+const BODY_FILE = path.join(HERE, 'body.js');
+let BUILD = buildOf(BODY_FILE);
+let buildStat = null;
+function refreshBuild() {
+  let st = null;
+  try { st = fs.statSync(BODY_FILE); } catch { return BUILD; }
+  if (buildStat && st.mtimeMs === buildStat.mtimeMs && st.size === buildStat.size) return BUILD;
+  buildStat = st;
+  const next = buildOf(BODY_FILE);
+  if (next && next !== BUILD) {
+    const old = BUILD;
+    BUILD = next;
+    if (clients.size) {
+      console.log(`[body] 页面代码变了 ${String(old).slice(0, 8)} → ${next.slice(0, 8)}，让 ${clients.size} 个页面自己重载`);
+      send({ type: 'reload' });
+    } else {
+      console.log(`[body] 页面代码变了 ${String(old).slice(0, 8)} → ${next.slice(0, 8)}（当前没页面开着）`);
+    }
+  }
+  return BUILD;
+}
+// 模型目录：① 环境变量 ② 仓库里那套公皮 ③ live2d/model。
+// 之前只认 ②/③ 里的一个，手工起服务时没带环境变量就会静默指向不存在的目录，
+// 页面报「模型加载失败：Network error」，而服务本身一切正常——很难查。
+function findModelDir() {
+  const env = process.env.LIVE2D_MODEL_DIR;
+  if (env) return env;
+  const guesses = [
+    path.join(HERE, '..', 'DeepSeek免费公皮', 'DeepSeek免费公皮', 'DeepSeek'),
+    path.join(HERE, 'model'),
+  ];
+  for (const g of guesses) {
+    try {
+      if (fs.readdirSync(g).some((n) => n.toLowerCase().endsWith('.model3.json'))) return path.resolve(g);
+    } catch { /* 目录不存在就试下一个 */ }
+  }
+  return path.join(HERE, 'model');
+}
+const MODEL_DIR = findModelDir();
 const PORT = Number(process.env.BODY_PORT || process.env.LIVE2D_PORT || 17901);
 // 手机上要能看，服务就得绑到 0.0.0.0 上；但绑出去就必须有钥匙。
 // 本机（她自己的插件、桌面窗口）不需要钥匙，外面来的都要带 ?k=TOKEN。
@@ -19,7 +69,7 @@ const TOKEN = process.env.BODY_TOKEN || '';
 // 手机页面上打的字要进她的大脑：先落到同机 qq-agent 的 /api/inbox，
 // 由它当成一条「用户发来的 QQ 消息」处理。这里只负责把令牌和目标会话带上。
 const AGENT = process.env.BODY_AGENT || 'http://127.0.0.1:3210';
-const AGENT_CONFIG = process.env.BODY_AGENT_CONFIG || '';
+const AGENT_CONFIG = process.env.BODY_AGENT_CONFIG || '/var/lib/qqagent/config.json';
 let agentToken = '';
 let agentTokenAt = 0;
 
@@ -49,15 +99,26 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.wav': 'audio/wav',
   '.moc3': 'application/octet-stream'
 };
 
 const clients = new Set();
 // 自拍请求：页面收到 {type:'selfie'} 后把 PNG dataUrl 从 WS 回传，这里按 id 等它
 const pendingSelfies = new Map();
-const SELFIE_DIR = process.env.BODY_SELFIE_DIR || path.join(os.tmpdir(), 'live2d-body-selfie');
-let lastState = { expression: '', motion: '', text: '', at: 0 };
+const SELFIE_DIR = process.env.BODY_SELFIE_DIR || path.join(os.tmpdir(), 'qqagent-selfie');
+// 出声：说话模型就在这台机器上（local-hand/tts_server.py :17903）。
+// 云端只决定「这句要不要念」，合成和播放都在本地，音频不出网、不走隧道。
+const TTS_URL = process.env.BODY_TTS || 'http://127.0.0.1:17903';
+const TTS_CACHE = process.env.BODY_TTS_CACHE || path.join(HERE, '..', 'local-hand', 'out', 'tts-cache');
+const TTS_TIMEOUT = Math.max(5000, Number(process.env.BODY_TTS_TIMEOUT) || 30000);
+// 她「现在长什么样」的完整记录。刷新/重连回来照着这个重放：
+// 以前只存 pose/expression/motion/text，且页面按固定秒数猜，所以「她自己摆好的样子」刷新一次就没了。
+// until：0 = 常驻，>0 = 到期自己退掉，undefined = 老命令没记过（不重放）。
+let lastState = { expression: '', expressionUntil: 0, motion: '', motionAt: 0, text: '', word: '', wordUntil: 0, pose: '', poseUntil: 0, switches: {}, emotion: null, at: 0 };
 let lastHb = null;
+let lastTouch = null;   // 她最近一次被摸：{ zone, name, at }
+let lastDiag = null;    // 页面 ?bench=1 的闪烁自检结果
 let lastBounds = null;
 const history = [];
 
@@ -158,16 +219,19 @@ function applyToScene(cmd) {
   saveScene();
 }
 
-function send(payload) {
+function send(payload, only) {
   const raw = JSON.stringify(payload);
   for (const ws of clients) {
-    if (ws.readyState === 1) ws.send(raw);
+    if (ws.readyState !== 1) continue;
+    // only=<组>：只发给同一组的连接（试播台那种「只在这一块画布里试」，不去动别的鱼）
+    if (only && ws.group !== only) continue;
+    ws.send(raw);
   }
 }
 
 // ---- 鍘嗗彶浼氳瘽锛氳濂硅嚜宸辩殑绉佽亰瀛樻。锛堟枃浠舵病鍙樺氨涓嶉噸澶嶈В鏋愶級----
 // ---- 心情：读 heart 插件的账本（页面顶栏与抽屉用）----
-const MOOD_FILE = process.env.BODY_MOOD || '';
+const MOOD_FILE = process.env.BODY_MOOD || '/var/lib/qqagent/heart/mood.json';
 const EMO_KEYS = ['joy', 'steady', 'sweet', 'worry', 'anxious', 'sad', 'jealous', 'desire'];
 function moodLabelOf(v) {
   if (v < 35) return '低沉';
@@ -306,14 +370,28 @@ const server = http.createServer((req, res) => {
   }
 
   // 控制面只对本机开放：她自己的插件跑在同一台机器上，用不到外网。
-  // 这样就算哪天钥匙漏了，外面的人最多只能「看」她，不能让她说话/摆姿势。
+  // 但试播台是从浏览器（别的机器）打开的，得让它能摆姿态、放动作、触发脊髓——
+  // 所以带钥匙（cookie / ?k= / x-body-token）的远端请求放行「演出类」命令，
+  // 出声、自拍、改配置这些非演出类的仍然只对本机开放（在 /cmd 里按类型再拦一次）。
+  const PLAY_TYPES = new Set([
+    'pose', 'word', 'phrase', 'face', 'expression', 'emotion', 'switch', 'modelexpr',
+    'motion', 'say', 'reset', 'freeze', 'slow', 'param', 'scale', 'anim', 'stopanim',
+    'feel', 'spinal', 'autonomy',
+  ]);
   if ((p === '/cmd' || p === '/bounds') && !isLocal(req)) {
-    res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
-    return res.end(JSON.stringify({ ok: false, error: '控制面只对本机开放' }));
+    const k = url?.searchParams?.get('k') || req.headers['x-body-token'] || cookieToken(req) || '';
+    if (!(p === '/cmd' && TOKEN && String(k) === TOKEN)) {
+      res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ ok: false, error: '控制面只对本机开放' }));
+    }
   }
 
   if (req.method === 'GET' && (p === '/' || p === '/index.html')) {
     return serveIndex(res);
+  }
+  // 试播台：左边是身体本身（iframe），右边是按钮和滑杆。只在本机能改东西（/cmd 只对本机开放）。
+  if (req.method === 'GET' && (p === '/playground' || p === '/playground.html')) {
+    return serveFile(res, path.join(HERE, 'playground.html'));
   }
   if (req.method === 'GET' && p === '/body.js') {
     return serveFile(res, path.join(HERE, 'body.js'));
@@ -323,6 +401,17 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && p === '/vocab.json') {
     return serveFile(res, path.join(HERE, 'vocab.json'));
+  }
+  if (req.method === 'GET' && p.startsWith('/tts/')) {
+    // 只认缓存文件名本身（16 位十六进制 + .wav），挡掉 ../ 这类路径穿越。
+    // 声音必须从「页面自己这个源」取：跨到 :17903 去拿，WebAudio 会因跨源而拿不到波形，
+    // 嘴就只能继续假装在动。
+    const name = p.slice('/tts/'.length);
+    if (!/^[0-9a-f]{16}\.wav$/.test(name)) {
+      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end('bad name');
+    }
+    return serveFile(res, path.join(TTS_CACHE, name));
   }
   if (req.method === 'GET' && p.startsWith('/vendor/')) {
     const rel = p.slice('/vendor/'.length);
@@ -354,7 +443,24 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && p === '/state') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-    return res.end(JSON.stringify({ ok: true, clients: clients.size, lastState, lastHb, lastBounds, last: history.slice(-8) }));
+    return res.end(JSON.stringify({ ok: true, clients: clients.size, build: refreshBuild(), lastState, lastHb, lastTouch, lastBounds, lastDiag, last: history.slice(-8) }));
+  }
+  // 闪烁自检结果（页面 ?bench=1 跑完自己 POST 上来，方便我在服务端读，不用截图）
+  if (req.method === 'POST' && p === '/diag') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 8000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const j = JSON.parse(body || '{}');
+        lastDiag = { ...j, receivedAt: Date.now() };
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) }));
+      }
+    });
+    return;
   }
   // 手感面板：读取 / 保存物理阻尼设置
   if (req.method === 'GET' && p === '/phys') {
@@ -387,6 +493,22 @@ const server = http.createServer((req, res) => {
     req.on('data', (c) => { body += c; if (body.length > 2000) req.destroy(); });
     req.on('end', () => {
       try { lastBounds = { ...JSON.parse(body || '{}'), at: Date.now() }; } catch { /* ignore */ }
+      res.writeHead(204);
+      res.end();
+    });
+    return;
+  }
+  // 她被人摸了一下：页面 POST 过来，/state 里带出去，云端那层拼成一句话进提示词
+  if (req.method === 'POST' && p === '/touch') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 2000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const j = JSON.parse(body || '{}');
+        const zone = String(j.zone || '').slice(0, 16);
+        if (zone) lastTouch = { zone, name: String(j.name || '').slice(0, 16), at: Number(j.at) || Date.now() };
+        lastState.touch = lastTouch;
+      } catch { /* ignore */ }
       res.writeHead(204);
       res.end();
     });
@@ -492,6 +614,98 @@ const server = http.createServer((req, res) => {
     })();
     return;
   }
+  if (req.method === 'POST' && p === '/param-map') {
+    // M4 阶段 2：页面把 509 个参数的扫描结果（谁管哪个部位）落盘，产出 live2d/param-map.json
+    let body = '';
+    req.on('data', (c) => {
+      body += c;
+      if (body.length > 4000000) req.destroy();
+    });
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body || '{}');
+        if (!Array.isArray(data.rows)) throw new Error('需要 {"rows":[...]}');
+        const file = path.join(HERE, 'param-map.json');
+        fs.writeFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...data }, null, 1));
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, rows: data.rows.length, bytes: fs.statSync(file).size, file }));
+      } catch (e) {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) }));
+      }
+    });
+    return;
+  }
+  // ── 时间轴编辑器存的动画：live2d/anims/<名字>.json ────────────────────────
+  // GET  /anims            → 列表
+  // GET  /anims/<名字>.json → 一条
+  // POST /anims/delete/<名字> → 删（用 POST 是为了不让简单的爬虫／误点就删东西）
+  if (req.method === 'GET' && p === '/anims') {
+    try {
+      const dir = path.join(HERE, 'anims');
+      const list = fs.existsSync(dir)
+        ? fs.readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => {
+          const st = fs.statSync(path.join(dir, f));
+          return { name: f.replace(/\.json$/, ''), bytes: st.size, mtime: st.mtimeMs };
+        }).sort((a, b) => b.mtime - a.mtime)
+        : [];
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, list }));
+    } catch (e) {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) }));
+    }
+    return;
+  }
+  // 名字白名单：字母数字下划线、中文、连字符，外加「·」——
+  // 她编的动作名字习惯带中点（`待机·歪头看`），只认 \w 和中文会把这种名字挡成 400。
+  if (req.method === 'GET' && p.startsWith('/anims/') && p.endsWith('.json')) {
+    const name = decodeURIComponent(p.slice('/anims/'.length, -'.json'.length));
+    if (!/^[\w\u4e00-\u9fa5·-]{1,40}$/.test(name)) {
+      res.writeHead(400); res.end('bad name'); return;
+    }
+    const file = path.join(HERE, 'anims', name + '.json');
+    if (!fs.existsSync(file)) { res.writeHead(404); res.end('no such anim'); return; }
+    return serveFile(res, file);
+  }
+  if (req.method === 'POST' && p.startsWith('/anims/save')) {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 2000000) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body || '{}');
+        const name = String(data.name || '').trim();
+        if (!/^[\w\u4e00-\u9fa5·-]{1,40}$/.test(name)) throw new Error('名字只能是中英文数字、横线和中点，40 字以内');
+        if (!Array.isArray(data.tracks) || !data.tracks.length) throw new Error('至少要有一条轨道');
+        const dir = path.join(HERE, 'anims');
+        fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, name + '.json');
+        const payload = {
+          name,
+          duration: Math.max(200, Math.min(20000, Number(data.duration) || 2000)),
+          loop: !!data.loop,
+          tracks: data.tracks.slice(0, 60),
+          at: new Date().toISOString(),
+        };
+        fs.writeFileSync(file, JSON.stringify(payload, null, 1));
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, name, bytes: fs.statSync(file).size, file }));
+      } catch (e) {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) }));
+      }
+    });
+    return;
+  }
+  if (req.method === 'POST' && p.startsWith('/anims/delete/')) {
+    const name = decodeURIComponent(p.slice('/anims/delete/'.length));
+    if (!/^[\w\u4e00-\u9fa5·-]{1,40}$/.test(name)) { res.writeHead(400); res.end('bad name'); return; }
+    const file = path.join(HERE, 'anims', name + '.json');
+    try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch { /* ignore */ }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, name }));
+    return;
+  }
   if (req.method === 'POST' && p === '/cmd') {
     let body = '';
     req.on('data', (c) => {
@@ -505,21 +719,90 @@ const server = http.createServer((req, res) => {
         res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
         return res.end(JSON.stringify({ ok: false, error: '需要 {"type": "...", ...}' }));
       }
-      cmd.at = Date.now();
-      if (cmd.type === 'expression') lastState.expression = String(cmd.name || '');
-      if (cmd.type === 'motion') lastState.motion = String(cmd.name || '');
-      if (cmd.type === 'say') lastState.text = String(cmd.text || '');
-      if (cmd.type === 'pose') lastState.pose = String(cmd.name || '');
-      if (cmd.type === 'param') lastState.param = cmd.id ? String(cmd.id) : Object.keys(cmd.params || {}).join(',');
-      lastState.at = cmd.at;
-      try { applyToScene(cmd); } catch (e) { log('scene 更新失败：' + (e && e.message)); }
-      // 重载/冻结/心跳这类「动作」不能进补发队列：
-      // 否则页面一连上来就被 replay 的 reload 再刷一次，变成无限重载。
-      if (cmd.type !== 'reload' && cmd.type !== 'ping' && cmd.type !== 'freeze') {
-        history.push(cmd);
-        if (history.length > 60) history.shift();
+      // 远端（试播台）只许演出类命令；出声/自拍/重载这些仍然只给本机
+      if (!isLocal(req) && !PLAY_TYPES.has(cmd.type)) {
+        res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ ok: false, error: `远端只能做演出类动作，${cmd.type} 不行` }));
       }
-      send(cmd);
+      if (cmd.type === 'voice') {
+        // 出声：先在本机合成，再把 wav 地址推给页面。
+        // 单独走一条路，不进 lastState/history —— 声音是「此刻发生的事」，
+        // 页面重连时把十分钟前那句话再放一遍会很怪（和 say 的补发问题同一个坑）。
+        (async () => {
+          const reply = (obj) => {
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(JSON.stringify(obj));
+          };
+          const text = String(cmd.text || '').trim().slice(0, 200);
+          if (!text) return reply({ ok: false, error: '没有要说的话' });
+          const emotion = String(cmd.emotion || 'soft').trim() || 'soft';
+          try {
+            const r = await fetch(`${TTS_URL}/say_json`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ text, emotion }),
+              signal: AbortSignal.timeout(TTS_TIMEOUT)
+            });
+            const j = await r.json().catch(() => null);
+            if (!j || !j.ok || !j.file) throw new Error((j && j.error) || `声音服务回了 HTTP ${r.status}`);
+            const name = path.basename(String(j.file));
+            if (!/^[0-9a-f]{16}\.wav$/.test(name)) throw new Error(`声音文件名不对：${name}`);
+            const dur = Number(j.dur) || 0;
+            const payload = { type: 'voice', at: Date.now(), text, emotion, url: `/tts/${name}`, dur, cached: j.cached === true };
+            // play:false = 只合成不在这台机器上放（云端要拿去发 QQ 语音条，
+            // 放出来等于同一句话在房间里和 QQ 里各响一次）。
+            if (cmd.play !== false) send(payload);
+            return reply({ ok: true, delivered: cmd.play === false ? 0 : clients.size, clients: clients.size, url: payload.url, dur, emotion, cached: payload.cached });
+          } catch (e) {
+            const msg = String((e && e.message) || e);
+            log(`出声失败：${msg}`);
+            const hint = /fetch failed|ECONNREFUSED|timed out|aborted/i.test(msg)
+              ? '（说话服务没开？本机的 local-hand/tts_server.py 要在跑）'
+              : '';
+            return reply({ ok: false, error: `${msg}${hint}` });
+          }
+        })();
+        return;
+      }
+      cmd.at = Date.now();
+      // 记下「她现在的样子」：页面刷新/重连回来要照着这个重放，而不是空着一张脸等她下一句。
+      // until 语义：0 = 常驻（她自己说的「一直保持」），>0 = 到这个时间点自己退掉。
+      const holdRaw = Number(cmd.holdMs);
+      const untilOf = (defMs) => (Number.isFinite(holdRaw)
+        ? (holdRaw > 0 ? cmd.at + holdRaw : (holdRaw < 0 ? 0 : cmd.at + defMs))
+        : cmd.at + defMs);
+      // 试播台那种「只想在这一块画布里试」的命令带 only=<组>：只发给同组的客户端，
+      // 别去动桌面鱼/手机那几具。也正因为是试，不写进 lastState / history——
+      // 否则重连回来的那具会照着调试痕迹重放一遍。
+      const only = cmd.only ? String(cmd.only) : '';
+      if (!only) {
+        if (cmd.type === 'expression') { lastState.expression = String(cmd.name || ''); lastState.expressionUntil = untilOf(25000); }
+        if (cmd.type === 'motion') { lastState.motion = String(cmd.name || ''); lastState.motionAt = cmd.at; }
+        if (cmd.type === 'say') lastState.text = String(cmd.text || '');
+        if (cmd.type === 'pose') { lastState.pose = String(cmd.name || ''); lastState.poseUntil = untilOf(12000); }
+        if (cmd.type === 'word' || cmd.type === 'phrase') {
+          lastState.word = String(cmd.text || cmd.word || cmd.name || '');
+          lastState.wordUntil = untilOf(12000);
+        }
+        if (cmd.type === 'switch') lastState.switches[String(cmd.name || '')] = cmd.on !== false;
+        if (cmd.type === 'emotion') {
+          lastState.emotion = { v: Number(cmd.v) || 0, a: Number(cmd.a) || 0, d: Number(cmd.d) || 0, at: cmd.at };
+        }
+        if (cmd.type === 'param') lastState.param = cmd.id ? String(cmd.id) : Object.keys(cmd.params || {}).join(',');
+        if (cmd.type === 'reset') {
+          // 复位之后「她现在什么都不摆」，重放就不能再把旧姿势摆回去
+          lastState = { ...lastState, expression: '', expressionUntil: 0, motion: '', pose: '', poseUntil: 0, word: '', wordUntil: 0, switches: {}, emotion: null, text: '' };
+        }
+        lastState.at = cmd.at;
+        try { applyToScene(cmd); } catch (e) { log('scene 更新失败：' + (e && e.message)); }
+        // 重载/冻结/心跳这类「动作」不能进补发队列：
+        // 否则页面一连上来就被 replay 的 reload 再刷一次，变成无限重载。
+        if (cmd.type !== 'reload' && cmd.type !== 'ping' && cmd.type !== 'freeze') {
+          history.push(cmd);
+          if (history.length > 60) history.shift();
+        }
+      }
+      send(cmd, only);
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ ok: true, delivered: clients.size, clients: clients.size }));
     });
@@ -542,6 +825,8 @@ wss.on('connection', (ws, req) => {
     } catch { /* ignore */ }
   }
   if (!ok) { try { ws.close(4001, 'need token'); } catch { /* ignore */ } return; }
+  // 页面带 ?g=<组> 连上来就记住它属于哪一组：带 only=<组> 的命令只发给这一组
+  try { ws.group = new URL(req.url, 'http://x').searchParams.get('g') || ''; } catch { ws.group = ''; }
   clients.add(ws);
   ws.aliveAt = Date.now();
   ws.on('message', (raw) => {
@@ -557,7 +842,7 @@ wss.on('connection', (ws, req) => {
       }
     } catch { /* 心跳之类的非 JSON 忽略 */ }
   });
-  ws.send(JSON.stringify({ type: 'hello', at: Date.now(), lastState }));
+  ws.send(JSON.stringify({ type: 'hello', at: Date.now(), build: refreshBuild(), lastState }));
   try { ws.send(JSON.stringify({ type: 'scene', scene })); } catch { /* ignore */ }
   try { ws.send(JSON.stringify({ type: 'phys', cfg: physCfg })); } catch { /* ignore */ }
   // 以前这里会把最近 3 条命令补发一遍（「她刚说完身体才醒」），但那是把 20 分钟前的动作
@@ -581,7 +866,10 @@ setInterval(() => {
   }
 }, 15000);
 
+// 盯着 body.js：文件一变就让开着的页面自己重载（不然它们永远在跑老脚本）
+setInterval(() => { try { refreshBuild(); } catch { /* ignore */ } }, 4000);
+
 server.listen(PORT, HOST, () => {
   const keyed = TOKEN && HOST !== '127.0.0.1' ? '（要钥匙）' : '';
-  console.log(`[body] 模型的身体听在 http://${HOST}:${PORT}${keyed}（模型目录 ${MODEL_DIR}）`);
+  console.log(`[body] 大肥鱼的身体听在 http://${HOST}:${PORT}${keyed}（模型目录 ${MODEL_DIR}，页面 ${String(BUILD).slice(0, 8)}）`);
 });

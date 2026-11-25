@@ -1,13 +1,15 @@
 {
   "id": "body",
-  "name": "Live2D 身体",
-  "version": "0.6.6",
-  "description": "让她操控书房电脑上的 Live2D 身体：换表情、做动作、把她说的话显示成字幕并同步口型；别人说话时她也会抬头、换脸。",
+  "name": "大肥鱼的身体",
+  "version": "0.7.1",
+  "description": "让她操控本机的 Live2D 身体：换表情、做动作、把她说的话显示成字幕并同步口型；也能让某一句话真的念出声——默认发成 QQ 语音条，也可以只在本机扬声器里念（本地合成，由她自己决定念不念）；别人说话时她也会抬头、换脸。",
   "main": "index.js",
   "enabledByDefault": false,
   "capabilities": [
     "body.status",
-    "body.say"
+    "body.say",
+    "body.act",
+    "body.voice"
   ],
   "settings": {
     "enabled": true,
@@ -18,7 +20,8 @@
     "autoFace": true,
     "reactIncoming": true,
     "reactCooldownMs": 8000,
-    "timeoutMs": 2500
+    "timeoutMs": 2500,
+    "voiceTimeoutMs": 30000
   },
   "configSchema": {
     "enabled": {
@@ -44,7 +47,7 @@
     "baseUrl": {
       "type": "string",
       "label": "身体地址",
-      "description": "书房电脑上的 Live2D 服务地址，默认走 SSH 反向隧道的 127.0.0.1:17901"
+      "description": "本机 Live2D 服务的地址，默认走 SSH 反向隧道的 127.0.0.1:17901"
     },
     "mirror": {
       "type": "boolean",
@@ -76,6 +79,14 @@
       "min": 500,
       "max": 8000,
       "step": 100
+    },
+    "voiceTimeoutMs": {
+      "type": "number",
+      "label": "出声超时（毫秒）",
+      "description": "合成一句要等多久。首次 5 秒起、之后走缓存基本瞬回；太短会把刚合成到一半的句子掐掉",
+      "min": 5000,
+      "max": 120000,
+      "step": 1000
     }
   }
 }

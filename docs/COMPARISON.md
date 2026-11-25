@@ -8,7 +8,8 @@
 | **dsh-fish-river**（[bychance6600](https://github.com/bychance6600/dsh-fish-river)） | DSH 插件（某个角色皮的整合版） | **没有身体**，是人格/记忆/渠道整合 | — | — | QQ / B站私信 / 抖音 | 无 |
 | **AAAAGENT**（[phoiex](https://github.com/phoiex/AAAAGENT)） | 独立应用，macOS-first | Live2D 伴侣，动作/表情偏「播片」 | 无 | 无 | 微信 / QQ | **有**（TTS + ASR） |
 | **DesktopFriends**（[tosuke-sama](https://tosuke-sama.github.io/DesktopFriends/guide/)） | 桌面应用 | 桌宠（待机动作 + 交互） | 无 | 无 | 单机 | 无 |
-| **dsh-live2d-body**（本项目） | DSH 插件 + 渲染服务 | 509 参数 / 25 通道词表 / 7 层混合 / 物理波形 | **有**（做人话回执） | **有**（canvas 自拍 → 视觉模型） | 桌面 + 网页 + 手机（同一份现场） | 规划中 |
+| **dsh-whale-girl-live2d**（[Andersen216](https://github.com/Andersen216/dsh-whale-girl-live2d)） | DSH 插件（自带模型与运行时） | 手写 rig 接 `beforeModelUpdate`，mood 独占/props 常驻，alpha 遮罩命中 | 无 | 无 | 网页 | 无 |
+| **dsh-live2d-body**（本项目） | DSH 插件 + 渲染服务 | 509 参数 / 31 通道词表 / 47 姿态 / 7 层混合 / 物理波形 | **有**（做人话回执） | **有**（canvas 自拍 → 视觉模型） | 桌面 + 网页 + 手机（同一份现场） | 规划中 |
 
 ## 逐项差距
 
@@ -36,3 +37,5 @@
 - 如果要「能被程序精确使唤、还能自己看自己」的身体层 → 目前公开项目里没有同等实现，本项目补的是这一层。
 
 > 检索说明：GitHub 在本机被墙，上表信息来自项目 README 与仓库描述（经云端拉取），未逐个 clone 跑通；时间 2026-11。
+>
+> **2026-11-25 补记**：`dsh-whale-girl-live2d` 是最近的同类项目（同在 DSH 里挂 Live2D）。本项目与之独立实现，只在 Live2D 官方钩子 `beforeModelUpdate`、遮罩命中这类通用做法上相同；它把模型与 Cubism Core 一并打包进仓库，本仓库不这么做。

@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>大肥鱼 · 试播台</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; background: #0b0b10; color: #dfe3ec;
+         font: 13px/1.5 "Microsoft YaHei", system-ui, sans-serif; overflow: hidden; }
+  #stage { flex: 1 1 58%; min-width: 320px; border-right: 1px solid #1d1d26; background: #0b0b10; }
+  #stage iframe { width: 100%; height: 100%; border: 0; display: block; }
+  #panel { flex: 1 1 42%; overflow-y: auto; padding: 10px 12px 40px; }
+  h2 { font-size: 13px; margin: 14px 0 6px; color: #8fa0ff; font-weight: 600; letter-spacing: .04em; }
+  h2:first-child { margin-top: 2px; }
+  .row { display: flex; flex-wrap: wrap; gap: 4px; }
+  button { font: inherit; padding: 3px 7px; border-radius: 5px; border: 1px solid #2a2a38;
+           background: #16161f; color: #d7dbe6; cursor: pointer; }
+  button:hover { background: #22222e; border-color: #3a3a4d; }
+  button.hot { background: #2a2f52; border-color: #4a55a0; }
+  .toolbar { position: sticky; top: 0; background: #0b0b10ee; padding: 6px 0 8px; z-index: 5;
+             display: flex; gap: 6px; align-items: center; border-bottom: 1px solid #1d1d26; }
+  .toolbar button { padding: 4px 9px; }
+  #hud { color: #9aa0ae; font-size: 12px; margin-left: auto; max-width: 55%; overflow: hidden;
+         text-overflow: ellipsis; white-space: nowrap; }
+  input[type=text] { font: inherit; padding: 3px 6px; border-radius: 5px; border: 1px solid #2a2a38;
+                     background: #101017; color: #dfe3ec; width: 150px; }
+  .param { display: grid; grid-template-columns: 150px 1fr 52px; gap: 6px; align-items: center;
+           margin-bottom: 3px; }
+  .param label { color: #a9b0c0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  input[type=range] { width: 100%; }
+  .val { color: #7f8798; font-variant-numeric: tabular-nums; font-size: 12px; text-align: right; }
+  .hint { color: #6f7686; font-size: 12px; }
+  select { font: inherit; padding: 2px 4px; border-radius: 5px; border: 1px solid #2a2a38;
+           background: #101017; color: #dfe3ec; }
+</style>
+</head>
+<body>
+<div id="stage"><iframe id="fish"></iframe></div>
+<div id="panel">
+  <div class="toolbar">
+    <button id="reset">复位</button>
+    <button id="freeze">冻结</button>
+    <button id="slow">慢放 ×0.2</button>
+    <button id="spine">脊髓 开</button>
+    <span id="hud">…</span>
+    <span id="note" style="margin-left:12px;color:#8fd3ff"></span>
+  </div>
+
+  <h2>脊髓的六个触发（开着脊髓才有反应，配上「慢放」看细节）</h2>
+  <div class="row">
+    <button id="tMsg">他刚发来一条</button>
+    <button id="tSay">她说一句话</button>
+    <button id="tTouch">她刚被摸过</button>
+    <button id="tIdle2m">他两分钟没说话</button>
+    <button id="tMood">他五分钟没理 + 心情低</button>
+    <button id="tDump">看一眼 __spine / __sense</button>
+  </div>
+
+  <h2>姿态 op=pose（点一下就看）</h2>
+  <div class="row" id="poses"></div>
+
+  <h2>脸色 op=face（可混：委屈+生气 / 委屈60%+生气40%）</h2>
+  <div class="row" id="faces"></div>
+  <div class="row" style="margin-top:5px">
+    <input type="text" id="mix" placeholder="委屈60%+生气40%">
+    <button id="mixGo">应用这个脸色</button>
+    <button id="faceClear">收掉脸色</button>
+  </div>
+
+  <h2>词表 op=word（话里带动作就是这条）</h2>
+  <div class="row" id="words"></div>
+
+  <h2>道具 / 换装 op=switch</h2>
+  <div class="row" id="switches"></div>
+
+  <h2>参数滑杆（拖一下，立刻写死；松手就是常态）</h2>
+  <div class="hint" style="margin-bottom:6px">她平时用的通道都在下面。拖动后想看细节可以按「慢放」。</div>
+  <div id="params"></div>
+
+  <h2>动作时长</h2>
+  <div class="row">
+    <span class="hint">holdMs</span>
+    <select id="hold">
+      <option value="0">默认（按部位）</option>
+      <option value="600">0.6 秒</option>
+      <option value="1200">1.2 秒</option>
+      <option value="2000">2 秒</option>
+      <option value="4000" selected>4 秒</option>
+      <option value="-1">一直保持</option>
+    </select>
+  </div>
+
+  <h2>时间轴编辑器（自己编一段动作，存下来她能叫得出名字）</h2>
+  <div class="hint" style="margin-bottom:6px">
+    上面选参数 → 下面在轨道上点一下就加一个关键帧；拖动关键帧改时间，滚轮改数值（按住 Shift 微调）。
+    右键删掉。双击轨道上的空白处也能加。「预览」会立刻在旁边那具身上播。
+  </div>
+  <div class="row" style="margin-bottom:6px">
+    <input id="animName" placeholder="动作名字（例如 抬眼看你）" style="width:180px">
+    <span class="hint">时长</span>
+    <select id="animDur">
+      <option value="800">0.8 秒</option>
+      <option value="1500">1.5 秒</option>
+      <option value="2500" selected>2.5 秒</option>
+      <option value="4000">4 秒</option>
+      <option value="8000">8 秒</option>
+    </select>
+    <label class="hint"><input type="checkbox" id="animLoop"> 循环</label>
+    <button id="animPlay">预览</button>
+    <button id="animStop">停</button>
+    <button id="animSave">保存</button>
+    <button id="animClear">清空轨道</button>
+  </div>
+  <div class="row" style="margin-bottom:6px">
+    <span class="hint">现存动作</span>
+    <select id="animList" style="min-width:160px"></select>
+    <button id="animLoad">载入</button>
+    <button id="animDel">删除</button>
+  </div>
+  <div class="row" style="margin-bottom:6px">
+    <span class="hint">从现成姿态导入</span>
+    <select id="animPose" style="min-width:160px"></select>
+    <button id="animImportPose">导入成轨道</button>
+    <span class="hint">（导入后就能在下面拖关键帧改）</span>
+  </div>
+  <div class="hint" id="animPickHint" style="margin-bottom:4px">还没选参数 —— 在上面点一个参数滑杆的名字，或者用下面这排快捷通道：</div>
+  <div class="row" id="animQuick" style="margin-bottom:6px"></div>
+  <div id="animTracks"></div>
+  <canvas id="animCanvas" width="720" height="220" style="width:100%;max-width:760px;border:1px solid #2a2a33;border-radius:6px;background:#14141a;display:block"></canvas>
+</div>
+<div class="sec">
+  <h2>事件播放器（他发来 / 她说完 / 手离开 → 放你编好的动作）</h2>
+  <div class="hint" style="margin-bottom:6px">
+    这里填的是<strong>动作名</strong>（时间轴里存过的名字）。留空 = 这个事件不做。默认关着，开了才生效；
+    她自己调 pose / word / 脸色时，正在播的事件动作会立刻让位。
+  </div>
+  <div class="row" style="margin-bottom:6px">
+    <label><input type="checkbox" id="evOn"> 打开事件播放器</label>
+    <button id="evSave">保存映射</button>
+    <button id="evTestMsg">试一下「他发来」</button>
+    <button id="evTestEnd">试一下「她说完」</button>
+    <button id="evTestTouch">试一下「手离开」</button>
+  </div>
+  <div class="row" style="margin-bottom:4px">
+    <span class="hint" style="width:64px;display:inline-block">他发来</span>
+    <input id="evMsg" placeholder="例：抬眼看他" style="width:160px">
+  </div>
+  <div class="row" style="margin-bottom:4px">
+    <span class="hint" style="width:64px;display:inline-block">她说完</span>
+    <input id="evEnd" placeholder="例：说完收尾" style="width:160px">
+  </div>
+  <div class="row" style="margin-bottom:6px">
+    <span class="hint" style="width:64px;display:inline-block">手离开</span>
+    <input id="evTouch" placeholder="例：松手余韵" style="width:160px">
+  </div>
+  <div class="hint" id="evState">—</div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const fish = $('fish');
+const hold = () => Number($('hold').value);
+let win = null;
+
+// 这个画布是自己的独立一组：每次打开随机一个组名，画里那具带着它连 ws，
+// 这台面板发的命令也带 only=<组>，所以只影响这一块画布，不会去动桌面鱼/手机上那几具。
+const SOLO = 'pg-' + Math.random().toString(36).slice(2, 8);
+(function bootStage() {
+  const q = new URLSearchParams(location.search);
+  q.delete('g');
+  const soloQ = new URLSearchParams(q);
+  soloQ.set('g', SOLO);
+  const f = document.getElementById('fish');
+  if (f) f.src = '/?nolife&' + soloQ.toString();
+})();
+
+function cmd(payload) {
+  return fetch('/cmd', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...payload, only: SOLO }),
+  }).then((r) => r.json()).catch(() => null);
+}
+function btn(text, onClick, cls) {
+  const b = document.createElement('button');
+  b.textContent = text;
+  if (cls) b.className = cls;
+  b.onclick = onClick;
+  return b;
+}
+function fill(el, items, make) {
+  el.textContent = '';
+  for (const it of items) el.appendChild(make(it));
+}
+
+// iframe 里的目录（同源，直接拿）
+function catalog() {
+  try { return fish.contentWindow.__catalog(); } catch { return null; }
+}
+
+// 把「已被自编动作覆盖」的姿态按钮标出来（title 加一句 + 亮一点）
+async function markOverriddenPoses() {
+  const r = await fetch('/anims', { cache: 'no-store' }).then((x) => x.json()).catch(() => null);
+  const names = new Set(((r && r.list) || []).map((a) => a.name));
+  for (const b of document.querySelectorAll('#poses button')) {
+    if (names.has(b.textContent.trim())) {
+      b.title = '这个姿态已经被你的自编动作「' + b.textContent.trim() + '」顶掉了';
+      b.style.boxShadow = 'inset 0 0 0 1px #7d5cff';
+    }
+  }
+  return [...names];
+}
+
+// 参数的中文名（body.js 的 __catalog().labels 给的）；没收录就退回英文 id
+let LABELS = {};
+function cn(id) { return LABELS[id] || String(id).replace(/^Param/, ''); }
+
+async function boot() {
+  let cat = null;
+  for (let i = 0; i < 40 && !cat; i++) {
+    await new Promise((r) => setTimeout(r, 300));
+    cat = catalog();
+  }
+  if (!cat) { $('hud').textContent = '页面没起来（看控制台）'; return; }
+  win = fish.contentWindow;
+  LABELS = cat.labels || {};
+
+  fill($('poses'), cat.poses, (p) => btn(p, () => cmd({ type: 'pose', name: p, holdMs: hold() })));
+  // 哪些姿态已经被自编动作顶掉了：按钮上打个点，点它放的是你的版本
+  markOverriddenPoses();
+  // 时间轴编辑器的「从现成姿态导入」下拉：把 44 个姿态的名字填进去
+  fill($('animPose'), cat.poses, (p) => {
+    const o = document.createElement('option');
+    o.value = p; o.textContent = p;
+    return o;
+  });
+  fill($('faces'), cat.emotions, (e) => btn(e, () => cmd({ type: 'expression', name: e, holdMs: hold() || -1 })));
+  // 词表是异步加载的，刚打开时可能还没到；直接自己再取一份，保证按钮不空
+  let wordKeys = cat.wordKeys || [];
+  if (!wordKeys.length) {
+    try { const j = await (await fetch('/vocab.json', { cache: 'no-store' })).json(); wordKeys = Object.keys(j.words || {}); } catch { /* ignore */ }
+  }
+  fill($('words'), wordKeys, (w) => btn(w, () => cmd({ type: 'word', text: w, holdMs: hold() })));
+  const swEl = $('switches');
+  swEl.textContent = '';
+  let on = new Set();
+  for (const s of cat.switches) {
+    const b = btn(s, async () => {
+      const next = !on.has(s);
+      await cmd({ type: 'switch', name: s, on: next });
+      if (next) on.add(s); else on.delete(s);
+      b.classList.toggle('hot', next);
+    });
+    swEl.appendChild(b);
+  }
+
+  const box = $('params');
+  box.textContent = '';
+  for (const id of cat.sliders) {
+    const info = cat.params[id] || { min: -30, max: 30 };
+    const wrap = document.createElement('div');
+    wrap.className = 'param';
+    const lb = document.createElement('label');
+    lb.textContent = cn(id);
+    lb.title = id;
+    const rg = document.createElement('input');
+    rg.type = 'range';
+    rg.min = info.min; rg.max = info.max;
+    rg.step = (info.max - info.min) > 4 ? 0.5 : 0.01;
+    rg.value = 0;
+    const vv = document.createElement('span');
+    vv.className = 'val';
+    vv.textContent = '0';
+    let t = 0;
+    rg.oninput = () => {
+      const v = Number(rg.value);
+      vv.textContent = v.toFixed(1);
+      clearTimeout(t);
+      t = setTimeout(() => cmd({ type: 'param', id, value: v, holdMs: -1 }), 40);
+    };
+    wrap.append(lb, rg, vv);
+    box.appendChild(wrap);
+  }
+  setInterval(async () => {
+    try {
+      const h = await win.eval('(() => { const e = document.querySelector("#hud"); return e ? e.innerText.replace(/\\s+/g, " ").trim() : ""; })()');
+      $('hud').textContent = h || '—';
+    } catch { /* ignore */ }
+  }, 800);
+}
+
+$('reset').onclick = () => cmd({ type: 'reset' });
+let frozen = false;
+$('freeze').onclick = async (e) => {
+  frozen = !frozen;
+  await cmd({ type: 'freeze', on: frozen });
+  e.target.classList.toggle('hot', frozen);
+};
+let slow = false;
+$('slow').onclick = (e) => {
+  slow = !slow;
+  try {
+    const w = fish.contentWindow;
+    if (!w.__tsInstalled) {
+      w.Function(`if (!window.__tsInstalled) {
+        const pn = performance.now.bind(performance);
+        const dn = Date.now.bind(Date);
+        window.__ts = 1;
+        let pLast = pn(), vP = pLast, dLast = dn(), vD = dLast;
+        performance.now = () => { const r = pn(); vP += (r - pLast) * (window.__ts || 1); pLast = r; return vP; };
+        Date.now = () => { const r = dn(); vD += (r - dLast) * (window.__ts || 1); dLast = r; return vD; };
+        window.__tsInstalled = true;
+      }`)();
+    }
+    w.__ts = slow ? 0.2 : 1;
+  } catch (err) { console.warn(err); }
+  e.target.classList.toggle('hot', slow);
+  e.target.textContent = slow ? '正常速度' : '慢放 ×0.2';
+};
+$('mixGo').onclick = () => { const v = $('mix').value.trim(); if (v) cmd({ type: 'expression', name: v, holdMs: hold() || -1 }); };
+$('faceClear').onclick = () => cmd({ type: 'expression', name: '', holdMs: -1 });
+
+// 脊髓开关：关掉就退回「随机待机」，开着才是「对着他动」
+let spineOn = true;
+const syncSpineBtn = () => {
+  const b = $('spine');
+  b.textContent = '脊髓 ' + (spineOn ? '开' : '关');
+  b.classList.toggle('hot', spineOn);
+};
+$('spine').onclick = () => { spineOn = !spineOn; cmd({ type: 'spinal', on: spineOn }); syncSpineBtn(); };
+syncSpineBtn();
+
+// ── 脊髓的六个触发 ──────────────────────────────────────────────────────────
+// 这六颗按钮走的是和真实场景**同一条**入径：feel 事件来自 /cmd（插件在 before-context 里也发这个），
+// say/touch 走平时的命令。所以按钮上看到的就是她真对话时的反应，不是特制demo。
+const fw = () => { try { return fish.contentWindow; } catch { return null; } };
+const spineInfo = () => { try { return fw().__spine(); } catch { return null; } };
+// 注意：上面那个 800ms 的轮询会不停把 #hud 改写成身体页自己的 HUD，
+// 所以触发按钮的回执写到旁边的 #note，别写 #hud（写了也会被打断）。
+const sayHud = (t) => { const el = $('note'); if (el) el.textContent = t; };
+
+$('tMsg').onclick = async () => {
+  // 真话路径：插件收到他的消息 → POST /cmd {type:'feel',kind:'msg'} → 脊髓 50ms 内抬眼
+  const r = await cmd({ type: 'feel', kind: 'msg' });
+  sayHud('他刚发来 → 脊髓抬眼（' + JSON.stringify(r) + '）');
+};
+$('tSay').onclick = async () => {
+  await cmd({ type: 'say', text: '这句是说给你听的，说完你会看到三段收尾', holdMs: 2600 });
+  sayHud('她在说 → 说完 0.2s 收气 / 0.5s 视线回收 / 1.2s 眉松');
+};
+$('tTouch').onclick = () => {
+  // 走真实入径：往 iframe 里派发一次 pointerdown/up，和用鼠标摸她完全同一条路
+  const w = fw();
+  try {
+    const fire = (type) => {
+      const ev = new w.PointerEvent(type, { clientX: 450, clientY: 250, button: 0, pointerType: 'mouse', bubbles: true });
+      w.dispatchEvent(ev);
+    };
+    fire('pointerdown');
+    setTimeout(() => fire('pointerup'), 280);
+    sayHud('摸了一下脸 → 0.3–0.9s 后余震收肩（开「慢放」看得清）');
+  } catch (e) { sayHud('摸不到（页面还没就绪）'); }
+};
+$('tIdle2m').onclick = () => {
+  const w = fw();
+  try {
+    w.__feel('msg');
+    // 把「最后一条消息」的时间往前推 2 分钟：__feel 只收 at，可以直接给过去的时间戳
+    w.__feel('msg', Date.now() - 125000);
+    sayHud('假装他两分钟没说话 → 视线漂移变勤（看 __sense().last.msgAge）');
+  } catch (e) { sayHud('页面还没就绪'); }
+};
+$('tMood').onclick = () => {
+  const w = fw();
+  try {
+    w.__feel('msg', Date.now() - 305000);
+    cmd({ type: 'emotion', v: -0.5, a: 0.1, d: 0.2 });
+    sayHud('五分钟没理 + 心情低 → 沉肩、视线往下（冷却 12 秒）');
+  } catch (e) { sayHud('页面还没就绪'); }
+};
+$('tDump').onclick = () => {
+  const w = fw();
+  try {
+    const s = w.__spine();
+    const sn = w.__sense();
+    sayHud('脊髓 on=' + s.on + ' ticks=' + s.ticks + ' writes=' + s.writes + ' refused=' + s.refused
+      + ' last=' + (s.last || '-') + ' | 最近一帧 msgAge=' + (sn.last ? sn.last.msgAge : '-')
+      + ' touchAge=' + (sn.last ? sn.last.touchAge : '-'));
+    console.log('__spine()', s);
+    console.log('__sense()', sn);
+  } catch (e) { sayHud('页面还没就绪'); }
+};
+
+// ── 时间轴编辑器 ───────────────────────────────────────────────────────────
+// 轨道形状和 body.js 里 __playAnimData 收的一样：{ id, e, keys:[{t,v}] }
+const TIMELINE = {
+  ids: [],                 // 选中的参数（最多 4 条，画面才看得清）
+  tracks: new Map(),       // id -> { e, keys: [{ t, v }] }
+  drag: null,              // { id, idx }
+  dur: 2500,
+};
+
+function tlRange(id) {
+  const cat = catalog();
+  const info = cat && cat.params ? cat.params[id] : null;
+  const min = info && Number.isFinite(info.min) ? info.min : -30;
+  const max = info && Number.isFinite(info.max) ? info.max : 30;
+  return { min, max, span: Math.max(0.001, max - min) };
+}
+function tlCanvasBox() {
+  const cv = $('animCanvas');
+  const r = cv.getBoundingClientRect();
+  return { cv, w: cv.width, h: cv.height, r };
+}
+function tlLaneH() {
+  const n = Math.max(1, TIMELINE.ids.length);
+  return ($('animCanvas').height - 18) / n;
+}
+function tlX(t) {
+  const { w } = tlCanvasBox();
+  return 56 + (Math.max(0, Math.min(TIMELINE.dur, t)) / TIMELINE.dur) * (w - 70);
+}
+function tlT(x) {
+  const { w } = tlCanvasBox();
+  return Math.max(0, Math.min(TIMELINE.dur, ((x - 56) / Math.max(1, w - 70)) * TIMELINE.dur));
+}
+function tlY(id, v) {
+  const lane = TIMELINE.ids.indexOf(id);
+  const lh = tlLaneH();
+  const top = 18 + lane * lh;
+  const { min, span } = tlRange(id);
+  return top + lh - 6 - ((v - min) / span) * (lh - 12);
+}
+function tlV(id, y) {
+  const lane = TIMELINE.ids.indexOf(id);
+  const lh = tlLaneH();
+  const top = 18 + lane * lh;
+  const { min, span } = tlRange(id);
+  const v = min + (((top + lh - 6 - y) / Math.max(1, lh - 12)) * span);
+  return Math.max(min, Math.min(min + span, v));
+}
+
+function tlTrack(id) {
+  if (!TIMELINE.tracks.has(id)) TIMELINE.tracks.set(id, { e: 'smooth', keys: [] });
+  return TIMELINE.tracks.get(id);
+}
+function tlAddTrack(id) {
+  if (TIMELINE.ids.includes(id)) return;
+  if (TIMELINE.ids.length >= 4) { sayHud('最多 4 条轨道，先删一条'); return; }
+  TIMELINE.ids.push(id);
+  tlTrack(id);
+  tlRenderChips();
+  tlDraw();
+}
+function tlDropTrack(id) {
+  TIMELINE.ids = TIMELINE.ids.filter((x) => x !== id);
+  TIMELINE.tracks.delete(id);
+  tlRenderChips();
+  tlDraw();
+}
+function tlRenderChips() {
+  const box = $('animTracks');
+  box.textContent = '';
+  if (!TIMELINE.ids.length) {
+    box.innerHTML = '<span class="hint">（还没有轨道：上面点一个参数名加进来）</span>';
+    return;
+  }
+  for (const id of TIMELINE.ids) {
+    const tr = tlTrack(id);
+    const wrap = document.createElement('span');
+    wrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;margin:0 8px 4px 0';
+    const tag = document.createElement('span');
+    tag.textContent = cn(id) + '（' + tr.keys.length + ' 帧）';
+    tag.title = id;
+    tag.style.cssText = 'border:1px solid #2f6f96;border-radius:4px;padding:1px 6px;color:#9fd8ff;font-size:12px';
+    const sel = document.createElement('select');
+    sel.style.fontSize = '12px';
+    for (const e of ['smooth', 'linear', 'in', 'out']) {
+      const o = document.createElement('option');
+      o.value = e; o.textContent = e;
+      if (tr.e === e) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.onchange = () => { tr.e = sel.value; tlDraw(); };
+    const del = document.createElement('button');
+    del.textContent = '×';
+    del.style.cssText = 'padding:0 5px;font-size:12px';
+    del.onclick = () => tlDropTrack(id);
+    wrap.append(tag, sel, del);
+    box.appendChild(wrap);
+  }
+}
+
+function tlDraw() {
+  const { cv, w, h } = tlCanvasBox();
+  const g = cv.getContext('2d');
+  g.clearRect(0, 0, w, h);
+  // 时间刻度
+  g.strokeStyle = '#242430';
+  g.fillStyle = '#6b7280';
+  g.font = '11px ui-sans-serif,system-ui';
+  const step = TIMELINE.dur <= 1500 ? 250 : TIMELINE.dur <= 3000 ? 500 : 1000;
+  for (let t = 0; t <= TIMELINE.dur; t += step) {
+    const x = tlX(t);
+    g.beginPath(); g.moveTo(x, 14); g.lineTo(x, h); g.stroke();
+    g.fillText((t / 1000).toFixed(t % 1000 ? 1 : 0) + 's', x + 2, 11);
+  }
+  const lh = tlLaneH();
+  TIMELINE.ids.forEach((id, lane) => {
+    const top = 18 + lane * lh;
+    const { min, span } = tlRange(id);
+    g.strokeStyle = '#1d1d27';
+    g.strokeRect(56, top + 2, w - 68, lh - 8);
+    g.fillStyle = '#7c8598';
+    g.fillText(cn(id), 2, top + 14);
+    g.fillText(String(Math.round(min)), 2, top + lh - 12);
+    g.fillText(String(Math.round(min + span)), 2, top + 12 + 0);
+    const tr = TIMELINE.tracks.get(id);
+    if (!tr) return;
+    const keys = tr.keys.slice().sort((a, b) => a.t - b.t);
+    // 曲线
+    if (keys.length >= 2) {
+      g.strokeStyle = '#4ea7dd';
+      g.lineWidth = 1.6;
+      g.beginPath();
+      for (let i = 0; i < keys.length - 1; i++) {
+        const a = keys[i], b = keys[i + 1];
+        const steps = 24;
+        for (let s = 0; s <= steps; s++) {
+          const t = a.t + ((b.t - a.t) * s) / steps;
+          const x = tlX(t), y = tlY(id, a.v + (b.v - a.v) * tlEase(tr.e, s / steps));
+          if (i === 0 && s === 0) g.moveTo(x, y); else g.lineTo(x, y);
+        }
+      }
+      g.stroke();
+    }
+    // 关键帧
+    for (const k of keys) {
+      const x = tlX(k.t), y = tlY(id, k.v);
+      g.fillStyle = '#ffd166';
+      g.beginPath(); g.arc(x, y, 4.2, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = '#111'; g.lineWidth = 1; g.stroke();
+    }
+  });
+  // 播放头
+  if (TIMELINE.playing) {
+    const w2 = fw();
+    let el = 0;
+    try { el = w2.__animInfo().elapsed; } catch { el = 0; }
+    const x = tlX(el);
+    g.strokeStyle = '#ff6b6b'; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(x, 12); g.lineTo(x, h); g.stroke();
+  }
+}
+function tlEase(kind, x) {
+  if (kind === 'linear') return x;
+  if (kind === 'in') return x * x;
+  if (kind === 'out') return 1 - (1 - x) * (1 - x);
+  return x * x * (3 - 2 * x);
+}
+
+// 画布交互
+const cvEl = $('animCanvas');
+cvEl.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const { r } = tlCanvasBox();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  for (const id of TIMELINE.ids) {
+    const tr = tlTrack(id);
+    for (let i = 0; i < tr.keys.length; i++) {
+      if (Math.abs(tlX(tr.keys[i].t) - x) < 7 && Math.abs(tlY(id, tr.keys[i].v) - y) < 7) {
+        tr.keys.splice(i, 1);
+        tlRenderChips(); tlDraw();
+        return;
+      }
+    }
+  }
+});
+cvEl.addEventListener('mousedown', (e) => {
+  const { r } = tlCanvasBox();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  for (const id of TIMELINE.ids) {
+    const tr = tlTrack(id);
+    for (let i = 0; i < tr.keys.length; i++) {
+      if (Math.abs(tlX(tr.keys[i].t) - x) < 8 && Math.abs(tlY(id, tr.keys[i].v) - y) < 8) {
+        TIMELINE.drag = { id, idx: i };
+        return;
+      }
+    }
+    // 空白处 = 加一帧
+    const lane = TIMELINE.ids.indexOf(id);
+    const lh = tlLaneH();
+    const top = 18 + lane * lh;
+    if (y >= top && y <= top + lh && x > 52) {
+      tr.keys.push({ t: tlT(x), v: tlV(id, y) });
+      tr.keys.sort((a, b) => a.t - b.t);
+      tlRenderChips(); tlDraw();
+      return;
+    }
+  }
+});
+window.addEventListener('mousemove', (e) => {
+  if (!TIMELINE.drag) return;
+  const { r } = tlCanvasBox();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const tr = tlTrack(TIMELINE.drag.id);
+  const k = tr.keys[TIMELINE.drag.idx];
+  if (!k) return;
+  k.t = tlT(x);
+  k.v = tlV(TIMELINE.drag.id, y);
+  tr.keys.sort((a, b) => a.t - b.t);
+  tlDraw();
+});
+window.addEventListener('mouseup', () => {
+  if (TIMELINE.drag) { TIMELINE.drag = null; tlRenderChips(); tlDraw(); }
+});
+cvEl.addEventListener('wheel', (e) => {
+  const { r } = tlCanvasBox();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  for (const id of TIMELINE.ids) {
+    const tr = tlTrack(id);
+    for (const k of tr.keys) {
+      if (Math.abs(tlX(k.t) - x) < 9 && Math.abs(tlY(id, k.v) - y) < 9) {
+        e.preventDefault();
+        const { span } = tlRange(id);
+        const dir = e.deltaY > 0 ? -1 : 1;
+        k.v += dir * span * (e.shiftKey ? 0.005 : 0.03);
+        const { min } = tlRange(id);
+        k.v = Math.max(min, Math.min(min + span, k.v));
+        tlDraw();
+        return;
+      }
+    }
+  }
+}, { passive: false });
+
+// 快捷通道：常用参数一点就加一条轨道
+function tlQuick() {
+  const cat = catalog();
+  const s = (cat && cat.sliders) || ['ParamAngleZ', 'ParamBodyAngleY', 'ParamBrowLY', 'ParamEyeLOpen'];
+  fill($('animQuick'), s.slice(0, 12), (id) => btn(cn(id), () => tlAddTrack(id)));
+}
+
+function tlExport() {
+  const tracks = [];
+  for (const id of TIMELINE.ids) {
+    const tr = tlTrack(id);
+    if (!tr.keys.length) continue;
+    tracks.push({ id, e: tr.e, keys: tr.keys.slice().sort((a, b) => a.t - b.t).map((k) => ({ t: Math.round(k.t), v: +k.v.toFixed(3) })) });
+  }
+  return { name: $('animName').value.trim() || '未命名', duration: TIMELINE.dur, loop: $('animLoop').checked, tracks };
+}
+
+$('animPlay').onclick = () => {
+  const data = tlExport();
+  if (!data.tracks.length) { sayHud('先加轨道和关键帧'); return; }
+  const w = fw();
+  try {
+    const r = w.__playAnimData(data);
+    TIMELINE.playing = true;
+    sayHud('预览 ' + data.name + '（' + data.tracks.length + ' 条轨道）' + (r && r.ok ? '' : '：' + (r && r.error)));
+    const tick = () => {
+      tlDraw();
+      let active = false;
+      try { active = w.__animInfo().active; } catch { active = false; }
+      if (active) requestAnimationFrame(tick); else { TIMELINE.playing = false; tlDraw(); }
+    };
+    requestAnimationFrame(tick);
+  } catch (e) { sayHud('页面还没就绪'); }
+};
+$('animStop').onclick = () => { try { fw().__stopAnim(); } catch { } TIMELINE.playing = false; tlDraw(); };
+$('animClear').onclick = () => { TIMELINE.ids = []; TIMELINE.tracks.clear(); tlRenderChips(); tlDraw(); sayHud('轨道清了'); };
+$('animDur').onchange = () => { TIMELINE.dur = Number($('animDur').value) || 2500; tlDraw(); };
+$('animSave').onclick = async () => {
+  const data = tlExport();
+  if (!data.tracks.length) { sayHud('没有轨道，存不了'); return; }
+  const r = await fetch('/anims/save', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data),
+  }).then((x) => x.json()).catch(() => null);
+  sayHud(r && r.ok ? ('已保存：' + r.name + '（' + r.bytes + ' 字节）') : ('保存失败：' + ((r && r.error) || '？')));
+  tlListAnims();
+  // 同名覆盖立即生效：先让页面刷新清单，再把被覆盖的姿态按钮标出来
+  try { const w = fw(); if (w && w.__animRefresh) await w.__animRefresh(); } catch { }
+  markOverriddenPoses();
+};
+async function tlListAnims() {
+  const r = await fetch('/anims', { cache: 'no-store' }).then((x) => x.json()).catch(() => null);
+  const list = (r && r.list) || [];
+  fill($('animList'), list, (a) => {
+    const o = document.createElement('option');
+    o.value = a.name; o.textContent = a.name + '（' + (a.bytes / 1024).toFixed(1) + 'KB）';
+    return o;
+  });
+  if (!list.length) {
+    const o = document.createElement('option');
+    o.value = ''; o.textContent = '（还没有存过动作）';
+    $('animList').appendChild(o);
+  }
+}
+$('animLoad').onclick = async () => {
+  const name = $('animList').value;
+  if (!name) return;
+  const data = await fetch('/anims/' + encodeURIComponent(name) + '.json', { cache: 'no-store' }).then((x) => x.json()).catch(() => null);
+  if (!data) { sayHud('载入失败'); return; }
+  TIMELINE.ids = []; TIMELINE.tracks.clear();
+  TIMELINE.dur = data.duration || 2500;
+  $('animDur').value = String([800, 1500, 2500, 4000, 8000].includes(TIMELINE.dur) ? TIMELINE.dur : 2500);
+  $('animName').value = data.name || name;
+  $('animLoop').checked = !!data.loop;
+  for (const tr of data.tracks || []) {
+    TIMELINE.ids.push(tr.id);
+    TIMELINE.tracks.set(tr.id, { e: tr.e || 'smooth', keys: (tr.keys || []).map((k) => ({ t: k.t, v: k.v })) });
+  }
+  tlRenderChips(); tlDraw();
+  sayHud('载入 ' + name + '（' + (data.tracks || []).length + ' 条轨道）');
+};
+$('animDel').onclick = async () => {
+  const name = $('animList').value;
+  if (!name) return;
+  await fetch('/anims/delete/' + encodeURIComponent(name), { method: 'POST' }).catch(() => null);
+  sayHud('删了 ' + name);
+  tlListAnims();
+};
+
+// 把现成姿态的配方搬进时间轴，当草稿继续拖。
+// 姿态里的 set 是「到位后的静态值」，这里铺成 起→到位→保持→回位 四个关键帧；
+// wave 型（点头/摇头/摇尾巴…）按它的 hz 采样成正弦。
+function tlImportPose() {
+  const cat = catalog();
+  const name = $('animPose').value;
+  const p = cat && cat.poseSet ? cat.poseSet[name] : null;
+  if (!p) { sayHud('没有这个姿态的配方'); return; }
+  const src = Object.entries(p.set || {});
+  const wave = p.wave && p.wave.amp ? p.wave : null;
+  if (!src.length && !wave) { sayHud('「' + name + '」没有可搬的参数'); return; }
+
+  TIMELINE.ids = []; TIMELINE.tracks.clear();
+  const dur = Math.max(600, Math.min(8000, Number(p.holdMs) || (wave ? Number(wave.ms) || 1600 : 2500)));
+  TIMELINE.dur = dur;
+  $('animDur').value = String([800, 1500, 2500, 4000, 8000].includes(dur) ? dur : 2500);
+  $('animName').value = name + '-改';
+
+  const add = (id, keys) => {
+    if (TIMELINE.tracks.has(id)) return;
+    if (TIMELINE.ids.length >= 4) return;      // 画面只有 4 条道
+    TIMELINE.ids.push(id);
+    TIMELINE.tracks.set(id, { e: 'smooth', keys });
+  };
+  if (src.length) {
+    for (const [id, v] of src) {
+      add(id, [
+        { t: 0, v: 0 },
+        { t: Math.round(dur * 0.18), v },
+        { t: Math.round(dur * 0.82), v },
+        { t: dur, v: 0 },
+      ]);
+    }
+  }
+  if (wave) {
+    const hz = Math.max(0.2, Number(wave.hz) || 2);
+    const ph = Array.isArray(wave.phase) ? wave.phase : [];
+    Object.entries(wave.amp).forEach(([id, amp], i) => {
+      const keys = [];
+      const n = 16;
+      for (let k = 0; k <= n; k++) {
+        const t = Math.round((dur * k) / n);
+        const decay = 1 - (k / n) * 0.35;                       // 尾巴收一点，别像机械摆
+        keys.push({ t, v: +(Math.sin((t / 1000) * hz * Math.PI * 2 + (ph[i] || 0)) * amp * decay).toFixed(2) });
+      }
+      add(id, keys);
+    });
+  }
+  tlRenderChips(); tlDraw();
+  const extra = [];
+  if (p.sink) extra.push('下沉 ' + p.sink);
+  if (p.zoom) extra.push('推近 ' + p.zoom);
+  if (p.lean) extra.push('前倾物理 ' + p.lean);
+  sayHud('导入「' + name + '」→ ' + TIMELINE.ids.length + ' 条轨道、' + (dur / 1000).toFixed(1) + ' 秒'
+    + (extra.length ? '；这几项不随时间轴走：' + extra.join('、') : ''));
+}
+$('animImportPose').onclick = () => { try { tlImportPose(); } catch (e) { sayHud('导入失败：' + (e && e.message)); } };
+
+// 首帧 catalog() 还是 null（boot 在下面才跑），所以快捷通道在这里懒加载一次
+let tlQuickDone = false;
+setInterval(() => {
+  if (!tlQuickDone && catalog()) { tlQuickDone = true; try { tlQuick(); } catch { } }
+  if (!TIMELINE.drag) tlDraw();
+}, 400);
+
+// ── 事件播放器：把「他发来 / 她说完 / 手离开」接到你编好的动作上 ──────────────
+// 默认关。开关和映射都存进 localStorage（在身体页那一侧），所以刷新不丢。
+function evState() {
+  const f = fw();
+  return (f && typeof f.__eventState === 'function') ? f.__eventState() : null;
+}
+function evSync() {
+  const st = evState();
+  if (!st) { $('evState').textContent = '身体页还没连上…'; return; }
+  $('evOn').checked = !!st.on;
+  $('evMsg').value = st.map.msg || '';
+  $('evEnd').value = st.map.talkend || '';
+  $('evTouch').value = st.map.touchend || '';
+  $('evState').textContent = `状态：${st.on ? '开' : '关'} · 播过 ${st.plays} 次 · 没找到 ${st.misses} 次 · 让位 ${st.yielded} 次` +
+    (st.active ? ` · 正在播「${st.active}」` : '') + (st.skipped ? ` · 跳过 ${st.skipped} 次` : '');
+}
+function evApply() {
+  const f = fw();
+  if (!f || typeof f.__eventAnim !== 'function') { sayHud('身体页还没连上'); return; }
+  f.__eventAnim({
+    on: $('evOn').checked,
+    map: { msg: $('evMsg').value.trim(), talkend: $('evEnd').value.trim(), touchend: $('evTouch').value.trim() },
+  });
+  evSync();
+  sayHud('事件播放器：' + ($('evOn').checked ? '开' : '关'));
+}
+$('evSave').onclick = evApply;
+$('evTestMsg').onclick = () => { const f = fw(); if (f && f.__feel) { f.__feel('msg'); sayHud('模拟：他刚发来一条'); } };
+$('evTestEnd').onclick = () => { const f = fw(); if (f && f.__feel) { f.__feel('msg', Date.now() - 5000); cmd({ type: 'say', text: '嗯，我在听。', holdMs: 900 }); sayHud('模拟：她说一句再说完了'); } };
+$('evTestTouch').onclick = () => { const f = fw(); if (f && f.__eventAnimPlay) { const r = f.__eventAnimPlay('touchend'); sayHud('模拟：手离开 → ' + (r && r.ok ? r.name : (r && r.skipped) || '没放')); } };
+setInterval(evSync, 1200);
+
+boot();
+</script>
+</body>
+</html>

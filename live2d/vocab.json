@@ -2,19 +2,25 @@
   "version": 2,
   "note": "词表 v2：她说词，参数藏在词底下。word → channel(通道) → 参数。多个词可以叠加，程度词（微微/有点/很/超）按它前面的那个词缩放，时长词（一会儿/两秒/一直）决定保持多久。数值单位：通道值 1 = 该通道的满幅（下面 params 里的数就是满幅时的参数增量）。",
   "degrees": {
-    "微微": 0.25,
-    "轻轻": 0.3,
-    "稍微": 0.35,
-    "有点": 0.45,
-    "有点儿": 0.45,
-    "一点": 0.45,
-    "挺": 0.75,
-    "比较": 0.8,
+    "微微": 0.55,
+    "轻轻": 0.6,
+    "稍微": 0.68,
+    "有点": 0.75,
+    "有点儿": 0.75,
+    "一点": 0.75,
+    "挺": 0.88,
+    "比较": 0.92,
     "很": 1,
     "特别": 1.1,
     "非常": 1.1,
-    "超级": 1.2,
-    "极": 1.25
+    "超级": 1.15,
+    "极": 1.2,
+    "用力地": 1.08,
+    "用力": 1.08,
+    "使劲地": 1.12,
+    "使劲": 1.12,
+    "重重地": 1.12,
+    "重重": 1.12
   },
   "durations": {
     "一下": 1200,
@@ -33,31 +39,30 @@
     "head_roll": {
       "params": {
         "ParamAngleZ": 30,
-        "ParamBodyAngleZ": 8,
-        "AngleXbs": -8
+        "ParamBodyAngleZ": 8
       }
     },
     "head_pitch": {
       "params": {
-        "ParamAngleY": 18,
-        "AngleY": 26
+        "ParamBodyAngleY": 16,
+        "ParamAngleY": 18
       },
-      "sinkUp": -8,
-      "sinkDown": 15
+      "sinkUp": -4,
+      "sinkDown": 9
     },
     "head_yaw": {
       "params": {
-        "ParamAngleX": 15,
-        "AngleXbs": 10
+        "ParamAngleX": 24,
+        "ParamBodyAngleX": 5
       }
     },
     "neck_in": {
       "params": {
-        "ParamAngleY": -12,
-        "AngleY": -14,
-        "ShoulderY": 20
+        "ParamBodyAngleY": -16,
+        "ParamAngleY": -14
       },
-      "sinkDown": 8
+      "sinkDown": 9,
+      "note": "AngleY 实测 0.00%、ShoulderY 0.82%（都是死的）。照 POSES['缩脖'] 的配方改成上身缩 + 头低：ParamBodyAngleY -16（15.41%）+ ParamAngleY -14（2.93%）。"
     },
     "eyes_x": {
       "params": {
@@ -71,8 +76,8 @@
     },
     "eye_open": {
       "params": {
-        "ParamEyeLOpen": 0.5,
-        "ParamEyeROpen": 0.5
+        "ParamEyeLOpen": 1,
+        "ParamEyeROpen": 1
       },
       "base": 1
     },
@@ -108,16 +113,15 @@
     },
     "mouth_smile": {
       "params": {
-        "MouthSmile_L": 1,
-        "MouthSmile_R": 1,
-        "ParamMouthForm": 1
+        "ParamMouthForm": 1,
+        "ParamMouthOpenY": 0.2,
+        "CheeksWiggleY": 0.6
       }
     },
     "mouth_frown": {
       "params": {
-        "MouthSmile_L": -1,
-        "MouthSmile_R": -1,
-        "ParamMouthForm": -1
+        "ParamMouthForm": -1,
+        "MouthPressLipOpen": -0.6
       }
     },
     "mouth_pucker": {
@@ -140,42 +144,47 @@
     },
     "tongue": {
       "params": {
-        "TongueOut": 1
-      }
+        "ParamMouthOpenY": 0.5,
+        "ParamMouthForm": 0.55,
+        "CheeckPuff": 0.35
+      },
+      "note": "TongueOut 实测推满 0.00%（这副皮没绑舌头骨骼），照 POSES['吐舌头'] 的配方来：张嘴 + 咧嘴 + 一点鼓腮"
     },
     "blush": {
       "params": {
-        "CheeksWiggleX": 1,
         "CheeksWiggleY": 1
       }
     },
     "body_pitch": {
       "params": {
-        "ParamBodyAngleX": 14,
-        "ParamBodyAngleY": -8,
-        "ShoulderY": 6
+        "ParamBodyAngleX": 8,
+        "ParamBodyAngleY": -10,
+        "ParamHipAngleZ": 5,
+        "ParamAngleY": -4
       },
-      "sinkDown": 6,
-      "sinkUp": -4
+      "sinkDown": 5,
+      "sinkUp": -3,
+      "zoom": 0.1,
+      "lean": -14
     },
     "body_roll": {
       "params": {
-        "ParamBodyAngleZ": 8,
-        "HipAngleZ": 20
+        "ParamBodyAngleZ": 14,
+        "ParamHipAngleZ": 10
       }
     },
     "body_yaw": {
       "params": {
-        "HipAngleZ": 20,
-        "ParamHipAngleZ": 14,
-        "ShoulderZ": -10
+        "ParamBodyAngleZ": 10,
+        "ParamHipAngleZ": 16
       }
     },
     "shoulder_up": {
       "params": {
-        "ShoulderY": 22,
-        "ShoulderZ": 10
-      }
+        "ParamBodyAngleRX": 14,
+        "ParamBodyAngleY": 8
+      },
+      "note": "ShoulderY/ShoulderZ 实测 0.8% 左右（几乎看不出），照 POSES['提肩'/'沉肩'] 的配方改成挺胸/塌胸：ParamBodyAngleRX ±14 + 上身 ±8"
     },
     "tail_up": {
       "params": {
@@ -199,8 +208,8 @@
     },
     "eye_wide": {
       "params": {
-        "ParamEyeLOpen": 0.15,
-        "ParamEyeROpen": 0.15
+        "ParamEyeLOpen": 0.5,
+        "ParamEyeROpen": 0.5
       },
       "base": 1
     },
@@ -219,6 +228,40 @@
       },
       "sinkDown": 4,
       "note": "整脸嘟嘴：嘴+鼓腮+眉"
+    },
+    "eye_close_left": {
+      "params": {
+        "ParamEyeLOpen": -1,
+        "ParamEyeROpen": 0
+      },
+      "base": 1
+    },
+    "eye_close_right": {
+      "params": {
+        "ParamEyeLOpen": 0,
+        "ParamEyeROpen": -1
+      },
+      "base": 1
+    },
+    "eye_half_left": {
+      "params": {
+        "ParamEyeLOpen": -0.45,
+        "ParamEyeROpen": 0
+      },
+      "base": 1
+    },
+    "eye_half_right": {
+      "params": {
+        "ParamEyeLOpen": 0,
+        "ParamEyeROpen": -0.45
+      },
+      "base": 1
+    },
+    "brow_down": {
+      "params": {
+        "ParamBrowLY": -1,
+        "ParamBrowRY": -1
+      }
     }
   },
   "waves": {
@@ -430,12 +473,10 @@
       "eye_open": -0.15
     },
     "吐舌": {
-      "tongue": 1,
-      "mouth_open": 0.3
+      "tongue": 1
     },
     "吐舌头": {
-      "tongue": 1,
-      "mouth_open": 0.3
+      "tongue": 1
     },
     "脸红": {
       "blush": 1,
@@ -471,6 +512,53 @@
     },
     "摆尾巴": {
       "tail_side": 1
+    },
+    "左眼闭": {
+      "eye_close_left": 1
+    },
+    "闭左眼": {
+      "eye_close_left": 1
+    },
+    "右眼闭": {
+      "eye_close_right": 1
+    },
+    "闭右眼": {
+      "eye_close_right": 1
+    },
+    "眨一只眼": {
+      "eye_close_left": 1,
+      "eye_smile": 0.3
+    },
+    "眨个眼": {
+      "eye_close_left": 1,
+      "eye_smile": 0.3
+    },
+    "单眼眯": {
+      "eye_half_left": 1
+    },
+    "眯一只眼": {
+      "eye_half_left": 1
+    },
+    "左眼眯": {
+      "eye_half_left": 1
+    },
+    "右眼眯": {
+      "eye_half_right": 1
+    },
+    "竖耳朵": {
+      "brow_up": 1
+    },
+    "耳朵竖起来": {
+      "brow_up": 1
+    },
+    "耷拉耳朵": {
+      "brow_down": 1
+    },
+    "耳朵垂下来": {
+      "brow_down": 1
+    },
+    "耳朵塌下去": {
+      "brow_down": 1
     }
   }
 }

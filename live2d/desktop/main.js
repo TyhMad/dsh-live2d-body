@@ -1,9 +1,9 @@
-// Live2D 桌面身体：一个透明的、置顶的、无边框窗口，里面就是 17901 那个页面。
+// 大肥鱼的桌面身体：一个透明的、置顶的、无边框窗口，里面就是 17901 那个页面。
 //
-// 用法：electron.exe F:\GAME\qqagent\live2d\desktop
+// 用法：electron.exe <本仓库路径>\live2d\desktop
 // 或者双击 live2d\开桌面鱼.bat
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, Menu, MenuItem, dialog, ipcMain, screen } = require('electron');
 const path = require('node:path');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
@@ -21,6 +21,12 @@ const ROOT = path.join(__dirname, '..');
 // 一挪就闪。后来查明崩的主因是「高 DPI 尺寸纠偏死循环」（已修），再加上 Chromium 把这块
 // 显卡判进了黑名单（`gl=disabled_software`），所以现在是：
 //   默认开加速 + 忽略黑名单 + 指定 D3D11；真出问题再设 FISH_SOFT=1 退回软件渲染。
+//
+// FISH_DEBUG_PORT=9338 时开 Chromium 远程调试口（我只在自检脚本里用；不设就不开）。
+// 注意：这个开关必须用 app.commandLine，命令行传 --remote-debugging-port 会被 Electron 当坏参数拒掉。
+if (process.env.FISH_DEBUG_PORT) {
+  app.commandLine.appendSwitch('remote-debugging-port', String(process.env.FISH_DEBUG_PORT));
+}
 if (softMode()) {
   app.disableHardwareAcceleration();
 } else {
@@ -58,7 +64,7 @@ function savePos() {
 }
 
 // 这具身体偶尔会自己消失（隔十来分钟换一个实例）。留个时间线日志，下次能一眼看出
-// 是窗口被关、渲染崩、还是外部把它杀了：%APPDATA%\live2d-body-desktop\life.log
+// 是窗口被关、渲染崩、还是外部把它杀了：%APPDATA%\dafeiyu-body-desktop\life.log
 function life(msg) {
   try {
     const fs = require('node:fs');
@@ -154,7 +160,7 @@ function createWindow() {
     thickFrame: false,
     skipTaskbar: false,
     alwaysOnTop: true,
-    title: 'Live2D',
+    title: '大肥鱼',
     webPreferences: {
       backgroundThrottling: false,
       contextIsolation: true,
@@ -261,30 +267,75 @@ function createWindow() {
     life(`child-process-gone type=${d.type} reason=${d.reason} exit=${d.exitCode}`);
   });
 
-  // 右上角右键菜单
-  win.webContents.on('context-menu', () => {
+  // 右键菜单：网页端有的功能全挂在这儿。
+  // 桌面窗口把顶栏、输入条都藏了（body.desktop 的 CSS），不给菜单就没地方点这些功能。
+  // 页面那边开了 window.__fishUI 当出口，这里只管拼菜单、调方法，不碰 DOM 细节。
+  const runJs = (code) => {
+    try { return Promise.resolve(win.webContents.executeJavaScript(code, true)).catch(() => null); }
+    catch { return Promise.resolve(null); }
+  };
+  const ui = (js) => '(() => { try { return (' + js + '); } catch (e) { return null; } })()';
+  const panel = (on, which) => runJs(ui(on ? 'window.__fishUI.close()' : 'window.__fishUI.open(' + JSON.stringify(which) + ')'));
+
+  win.webContents.on('context-menu', async () => {
+    const st = (await runJs(ui('window.__fishUI && window.__fishUI.state ? window.__fishUI.state() : {}'))) || {};
+    const anyPanel = !!(st.hist || st.mood || st.phys);
     const menu = Menu.buildFromTemplate([
       {
-        label: win.isAlwaysOnTop() ? '取消置顶' : '保持置顶',
-        click: () => win.setAlwaysOnTop(!win.isAlwaysOnTop(), 'floating')
+        // 和网页顶栏那个「摸摸」同一个开关：关掉以后指针滑过她也不会上报触摸
+        label: st.touch ? '摸摸：开（点一下关掉）' : '摸摸：关（点一下打开）',
+        click: () => runJs(ui('window.__fishUI.toggleTouch()'))
       },
-      { label: '重新载入', click: () => win.reload() },
-      { type: 'separator' },
       {
-        // 关掉「以后自己出来」：留一个标记文件，local-hand\start-all.ps1 看到它就不再把鱼拉起来
-        label: '关掉，以后别自己出来',
-        click: () => {
-          try {
-            const fs = require('node:fs');
-            const dir = path.join(__dirname, '..', '..', 'local-hand');
-            if (fs.existsSync(dir)) fs.writeFileSync(path.join(dir, 'FISH_OFF'), 'off');
-            life('user turned off auto-launch (FISH_OFF written)');
-          } catch (err) { life('FISH_OFF write failed: ' + err.message); }
-          app.quit();
-        }
+        label: st.talk ? '收起输入条' : '跟她说句话…',
+        accelerator: 'CmdOrCtrl+T',
+        click: () => runJs(ui('window.__fishUI.talk(' + (st.talk ? 'false' : 'true') + ')'))
       },
-      { label: '退出（下次还会自己出来）', click: () => app.quit() }
+      { type: 'separator' },
+      { label: '对话记录', type: 'checkbox', checked: !!st.hist, click: () => panel(st.hist, 'hist') },
+      { label: '心情', type: 'checkbox', checked: !!st.mood, click: () => panel(st.mood, 'mood') },
+      { label: '手感 / 镜头', type: 'checkbox', checked: !!st.phys, click: () => panel(st.phys, 'phys') },
+      {
+        label: '镜头',
+        submenu: [
+          { label: '站远一点（0.9）', click: () => runJs(ui('window.__fishUI.tune("zoom", 0.9)')) },
+          { label: '正常（1.0）', click: () => runJs(ui('window.__fishUI.tune("zoom", 1.0)')) },
+          { label: '近一点（1.4）', click: () => runJs(ui('window.__fishUI.tune("zoom", 1.4)')) },
+          { label: '怼脸（1.8）', click: () => runJs(ui('window.__fishUI.tune("zoom", 1.8)')) }
+        ]
+      }
     ]);
+    if (anyPanel) menu.append(new MenuItem({ label: '收起面板', click: () => runJs(ui('window.__fishUI.close()')) }));
+    menu.append(new MenuItem({ type: 'separator' }));
+    menu.append(new MenuItem({
+      label: win.isAlwaysOnTop() ? '取消置顶' : '保持置顶',
+      click: () => win.setAlwaysOnTop(!win.isAlwaysOnTop(), 'floating')
+    }));
+    menu.append(new MenuItem({ label: '重新载入', click: () => win.reload() }));
+    menu.append(new MenuItem({ type: 'separator' }));
+    menu.append(new MenuItem({
+      // 关掉「以后自己出来」：留一个标记文件，local-hand\start-all.ps1 看到它就不再把鱼拉起来
+      label: '关掉，以后别自己出来',
+      click: () => {
+        try {
+          const fs = require('node:fs');
+          const flag = path.join(__dirname, '..', '..', 'local-hand', 'FISH_OFF');
+          fs.writeFileSync(flag, 'off');
+          life('user turned off auto-launch (FISH_OFF written)');
+        } catch (err) { life('FISH_OFF write failed: ' + err.message); }
+        app.quit();
+      }
+    }));
+    menu.append(new MenuItem({ label: '退出（下次还会自己出来）', click: () => app.quit() }));
+    if (process.env.FISH_MENU_DEBUG) {
+      // 自检用：原生菜单没法截图，就把这次拼出来的条目落到文件里，脚本那头断言结构。
+      try {
+        const fsm = require('node:fs');
+        const labels = menu.items.map((it) => (it.type === 'separator' ? '---' : (it.label || '(sub)') + (it.checked ? ' [x]' : '')));
+        fsm.writeFileSync(path.join(__dirname, '..', '..', 'local-hand', 'out', 'menu-debug.json'),
+          JSON.stringify({ at: Date.now(), labels }, null, 1));
+      } catch (err) { life('menu debug dump failed: ' + err.message); }
+    }
     menu.popup({ window: win });
   });
 

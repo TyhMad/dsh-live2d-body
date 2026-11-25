@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#0c1017" />
-<title>Live2D 身体</title>
+<title>大肥鱼</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -36,6 +36,12 @@
     border: 1px solid rgba(190,150,255,.32); background: rgba(24,18,34,.72); color: #e2d4ff;
     font: 600 13px/1 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   }
+  #btnTouch {
+    padding: 7px 12px; border-radius: 999px; cursor: pointer;
+    border: 1px solid rgba(120,225,200,.38); background: rgba(14,34,32,.72); color: #b8f4e6;
+    font: 600 13px/1 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  #btnTouch.off { border-color: rgba(160,170,185,.28); background: rgba(22,26,32,.72); color: #98a4b4; }
   body.desktop #topbar { display: none; }
 
   /* 状态小标签：姿态/表情/情绪/身上挂的东西 */
@@ -67,6 +73,27 @@
       font-size: 20px; padding: 14px 18px; border-radius: 16px; line-height: 1.6;
     }
     #hud { left: 10px; bottom: calc(78px + env(safe-area-inset-bottom, 0px)); font-size: 10px; padding: 5px 7px; }
+    /* 手机：刘海屏安全区 + 顶部条更高，状态标签要跟着下移，否则会压在她的名字上；
+       「手感」这种调参按钮原来在手机上藏掉了，但手机上也会想调（晃动幅度/静止幅度），
+       所以恢复它，只把尺寸压小、不占名字的位置。 */
+    #topbar { gap: 6px; padding: calc(9px + env(safe-area-inset-top, 0px)) 12px 9px; font-size: 14px; }
+    /* 手机上名字/副标题会被按钮挤到换行（"大肥…" / "手 感"）——名字不许缩、副标题省略、按钮不换行 */
+    #topbar .name { flex: 0 0 auto; white-space: nowrap; }
+    #topbar .sub {
+      font-size: 12px; min-width: 0; max-width: 26vw; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+    }
+    #topbar .mood { flex: 0 0 auto; white-space: nowrap; }
+    #btnHist, #btnMood { flex: 0 0 auto; white-space: nowrap; padding: 6px 10px; font-size: 12px; }
+    #btnPhys { flex: 0 0 auto; white-space: nowrap; padding: 6px 9px; font-size: 12px; }
+    #chips {
+      top: calc(56px + env(safe-area-inset-top, 0px));
+      padding: 0 12px; gap: 5px; max-height: 62px; overflow: hidden;
+    }
+    #chips span { font-size: 12px; padding: 4px 9px; }
+    /* 气泡要让开发送条：手机上输入条高约 60px，气泡底边留在它上面 */
+    #bubble { bottom: calc(84px + env(safe-area-inset-bottom, 0px)); max-width: 90vw; }
+    #chatbar { bottom: calc(10px + env(safe-area-inset-bottom, 0px)); width: min(560px, 94vw); }
   }
   /* 调试信息挪到左下角：顶部让给状态条，别两行字压在一起 */
   #hud {
@@ -78,6 +105,11 @@
   #hud b { color: #cfe3ff; font-weight: 600; }
   html.desktop, body.desktop { background: transparent; }
   body.desktop #hud { display: none; }
+  /* 桌面小窗只有 460 宽：抽屉别整块盖住她，矮一点、左右留缝、稍微透一点 */
+  body.desktop #histPanel, body.desktop #moodPanel, body.desktop #physPanel {
+    height: min(60vh, 420px); left: 8px; right: 8px;
+    background: rgba(9, 12, 18, .93);
+  }
   #drag { position: fixed; inset: 0 0 auto 0; height: 26px; z-index: 30; -webkit-app-region: drag; display: none; }
   body.desktop #drag { display: block; }
 
@@ -88,6 +120,9 @@
     width: min(560px, 92vw); display: flex; gap: 8px; z-index: 28;
   }
   body.desktop #chatbar { display: none; }
+  /* 桌面版（Electron 右键菜单）选「跟她说话…」时才把输入条叫出来：
+     透明窗口里就浮在底部，发完一句右键点「收起输入条」或按 Esc 收回去 */
+  body.desktop.talk #chatbar { display: flex; bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
   #chatin {
     flex: 1 1 auto; min-width: 0; padding: 13px 15px; border-radius: 14px;
     border: 1px solid rgba(140, 190, 255, .30); background: rgba(14, 18, 26, .9);
@@ -195,16 +230,17 @@
 
   <div id="topbar">
     <span id="dot"></span>
-    <span class="name">她</span>
+    <span class="name">大肥鱼</span>
     <span class="sub" id="sub">连接中…</span>
     <span class="mood" id="moodChip" title="她此刻的心情">心情 —</span>
     <button id="btnHist" type="button">对话记录</button>
     <button id="btnMood" type="button">心情</button>
     <button id="btnPhys" type="button">手感</button>
+    <button id="btnTouch" type="button">摸摸 开</button>
   </div>
   <div id="chips"></div>
 
-  <div id="hud"><b>她</b> · 身体待机中<br /><span id="hud2">连接中…</span></div>
+  <div id="hud"><b>大肥鱼</b> · 身体待机中<br /><span id="hud2">连接中…</span></div>
 
   <script>
     // 最早期的报错抓在这里：body.js 还没执行时出的错（比如模块顶层就炸了）也要能看见，
@@ -457,9 +493,21 @@
           pushPhys();
         });
 
+        // --- 摸脸 / 镜头：直接改身体那边的 TUNE（存 localStorage） ---
+        const sec3 = document.createElement('div');
+        sec3.className = 'physSec';
+        sec3.textContent = '摸脸与镜头（改完立刻生效）';
+        box.appendChild(sec3);
+        const T0 = (window.__tuneInfo && window.__tuneInfo()) || {};
+        addRow('近景', Number(T0.zoom ?? 1), 0.8, 2.4, 0.05, (v) => window.__tune && window.__tune({ zoom: v }));
+        addRow('摸脸幅度', Number(T0.leanGain ?? 1), 0.4, 1.8, 0.05, (v) => window.__tune && window.__tune({ leanGain: v }));
+        addRow('跟手', Number(T0.follow ?? 1), 0.4, 2, 0.05, (v) => window.__tune && window.__tune({ follow: v }));
+        addRow('蹭劲', Number(T0.nuzzle ?? 1), 0, 2, 0.05, (v) => window.__tune && window.__tune({ nuzzle: v }));
+        addRow('阴影', Number(T0.shadow ?? 1), 0, 2, 0.05, (v) => window.__tune && window.__tune({ shadow: v }));
+
         const tip = document.createElement('div');
         tip.className = 'physTip';
-        tip.textContent = '「静止」只管站着时自动的呼吸/重心变化；「动作」管晃腰、摇尾巴这类主动动作的幅度。改完立刻生效，也会记住到下次打开。';
+        tip.textContent = '「静止」只管站着时自动的呼吸/重心变化；「动作」管晃腰、摇尾巴这类主动动作的幅度。「近景」拉大就是把镜头推近（1.6 左右是胸像，2.0 以上怼脸）。改完立刻生效，也会记住到下次打开。';
         box.appendChild(tip);
 
         const btns = document.createElement('div');
@@ -526,6 +574,12 @@
       $('btnHist').addEventListener('click', () => openDrawer('hist'));
       $('btnMood').addEventListener('click', () => openDrawer('mood'));
       if ($('btnPhys')) $('btnPhys').addEventListener('click', () => openDrawer('phys'));
+      // 「摸摸」：开关她的可触摸状态（body.js 里 expose setTouchEnabled）
+      if ($('btnTouch')) {
+        $('btnTouch').addEventListener('click', () => {
+          if (typeof window.__setTouch === 'function') window.__setTouch(!window.__touchFlag());
+        });
+      }
       $('histClose').addEventListener('click', closeDrawers);
       $('moodClose').addEventListener('click', closeDrawers);
       if ($('physClose')) $('physClose').addEventListener('click', closeDrawers);
@@ -591,6 +645,60 @@
         }
       });
       window.addEventListener('resize', () => { if (window.visualViewport) window.scrollTo(0, 0); });
+
+      // --- 桌面版出口：Electron 的右键菜单只能隔着 IPC/executeJavaScript 调，
+      //     这里把网页端现成的这些能力包一层，别让主进程去摸 DOM 细节 ---
+      window.__fishUI = {
+        state() {
+          const open = (id) => {
+            const el = $(id);
+            return !!(el && el.classList.contains('open'));
+          };
+          return {
+            touch: typeof window.__touchFlag === 'function' ? !!window.__touchFlag() : false,
+            hist: open('histPanel'),
+            mood: open('moodPanel'),
+            phys: open('physPanel'),
+            talk: document.body.classList.contains('talk')
+          };
+        },
+        open(which) { openDrawer(which); if (which === 'hist') loadHistory(); if (which === 'mood') loadMood(); },
+        close() { closeDrawers(); },
+        toggleTouch(want) {
+          if (typeof window.__setTouch !== 'function') return null;
+          const target = want === undefined ? !window.__touchFlag() : !!want;
+          window.__setTouch(target);
+          return !!target;
+        },
+        talk(on) {
+          const want = on !== false;
+          document.body.classList.toggle('talk', want);
+          if (want) { setTimeout(() => { try { input.focus(); } catch { /* ignore */ } }, 80); }
+          else { try { input.blur(); } catch { /* ignore */ } }
+          return want;
+        },
+        // 菜单里选「跟她说一句」：塞进输入框再走原来那条 submit（失败会自动回填）
+        say(text) {
+          const t = String(text == null ? '' : text).trim();
+          if (!t) return false;
+          input.value = t;
+          if (typeof form.requestSubmit === 'function') form.requestSubmit();
+          else form.dispatchEvent(new Event('submit', { cancelable: true }));
+          return true;
+        },
+        send(text) { return this.say(text); },
+        tune(k, v) {
+          if (typeof window.__tune === 'function') window.__tune({ [k]: Number(v) });
+          return typeof window.__tuneInfo === 'function' ? window.__tuneInfo() : null;
+        },
+        tuneInfo() { return typeof window.__tuneInfo === 'function' ? window.__tuneInfo() : {}; },
+        mood() { return fetch('/mood' + (q ? q : ''), { cache: 'no-store' }).then((r) => r.json()).catch(() => null); },
+        expression(name) { return (window.__model && window.__model.expression) ? window.__model.expression(name) : null; }
+      };
+      // Esc 收起输入条（桌面窗口没有系统焦点管理，靠这个退出来）
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && document.body.classList.contains('talk')) window.__fishUI.talk(false);
+      });
     })();
   </script>
 
