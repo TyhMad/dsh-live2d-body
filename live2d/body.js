@@ -17,6 +17,15 @@ let bubbleTimer = null;
 let lastCommandAt = 0;
 let lastSayAt = 0;      // 上一次说话的时刻（诊断用）
 let lastSayText = '';   // 上一次说的内容（同一句被送两遍时去重）
+// 字幕排队：她经常 1 秒内连发两三句，直接换文本会让前一句根本没露面。
+// 规则：正在显示的那句放完再接下一条；最多排 2 句，再多就丢掉最旧的（别越积越久）。
+const SAY_Q = [];
+let sayShowing = null;  // { t, dur, proactive, until }
+const SAY_Q_MAX = 4;   // 她一轮常发三条（send_message 数组），排 2 句会把第三条直接丢掉
+// 最近说过的句子 → 时刻。云端推送说完一轮后，镜像轮询还会把这些话按同样顺序再送一遍；
+// 只比 lastSayText 不够（三条里第一条早就播完了），会看到同一句被重播。
+const SAY_RECENT = new Map();
+const SAY_DEDUPE_MS = 8000;
 let wsRef = null;       // 当前 WS 连接（诊断用）
 let retryMs = 800;      // 重连退避：从 0.8 秒起步（以前固定 10 秒，断一次就瞎十秒）
 let dragDowns = 0;      // 桌面版按下过多少次（诊断用：不涨说明鼠标事件没到页面）
@@ -2622,12 +2631,9 @@ function holdzStart(zone) {
   if (!HOLDZ.on) { HOLDZ.t0 = Date.now(); HOLDZ.retreat = 0; }
   HOLDZ.on = true;
   HOLDZ.zone = zone || 'chest';
-  // 摸胸口：把手放到胸口（模型自带道具）。只在她没自己开着的时候点，松手只关我们点的那一次。
-  if (HOLDZ.zone === 'chest' && !HOLDZ.chestSwitch) {
-    try {
-      if (SWITCHES['抚胸'] && !switchState.has('抚胸')) { applySwitch('抚胸', true, '按住'); HOLDZ.chestSwitch = true; }
-    } catch (e) { /* 道具没有就算了 */ }
-  }
+  // 11-25 晚：这里以前会点开模型道具「抚胸」，但松手那一下如果 petEnd 没跑到
+  // （鼠标移出窗口、pointerup 丢在别处），道具就永远开着 —— 表现成「她一直把手放在胸口」。
+  // 现在胸口改走 motion「举手」（手真的抬到胸口，见 petReact），这里不再碰任何道具。
 }
 
 function holdzStop() {
@@ -2640,6 +2646,11 @@ function holdzStop() {
 
 // 每帧调用：强度包络 + 各参数增量。起 260ms / 落 520ms（松手要慢一点，像肌肉在放松）
 function applyHoldZone(now) {
+  // 自愈：如果我们点开过「抚胸」而现在早已松手，就把它关掉（防止一次漏掉的 pointerup 让手永远抬着）
+  if (HOLDZ.chestSwitch && !HOLDZ.on) {
+    HOLDZ.chestSwitch = false;
+    try { applySwitch('抚胸', false, '按住'); } catch (e) { /* ignore */ }
+  }
   const want = HOLDZ.on ? (HOLDZ.light ? 0.55 : 1) : 0;
   HOLDZ.u += (want - HOLDZ.u) * perFrame(want > HOLDZ.u ? 0.30 : 0.13);
   if (HOLDZ.u < 0.008) { HOLDZ.u = 0; return; }
@@ -4326,7 +4337,11 @@ function applyWord(text, holdMs) {
   if (entry.switch) {
     for (const s of [].concat(entry.switch)) did = applySwitch(s, true) || did;
   }
-  if (entry.param) did = setParamMap(entry.param, keep, 3, 'manual', { layer: 'manual' }) > 0 || did;
+  if (entry.param) {
+    // 同 applyPhrase：写之前先把她碰到的参数从别的层撤掉，免得两条缓动打架
+    for (const pid of Object.keys(entry.param)) takeOverParam(pid, 3, 'manual', 2.5);
+    did = setParamMap(entry.param, keep, 3, 'manual', { layer: 'manual' }) > 0 || did;
+  }
   if (did) {
     lastWord = String(text || key);
     lastWordAt = Date.now();
@@ -4609,6 +4624,10 @@ function applyPhrase(text, holdMs) {
   // 固定间隔听起来像机械臂，人不会每次都挪同样多。
   phraseSeq += 1;
   const pSeq = phraseSeq;
+  // 同参数接管：她又说了一个词，就把它碰到的这些参数从别的层里撤掉（姿态的保持、
+  // 上一个词的收尾、待机节拍都算）。不撤的话两条缓动会在同一个参数上各拉各的，
+  // 人眼看到的就是「抽一下」。手势/触摸/口型比 manual 高，不动它们。
+  for (const pid of Object.keys(map)) takeOverParam(pid, 3, 'manual', 2.5);
   let n = 0;
   let gi = 0;
   let lag = 0;
@@ -5066,29 +5085,90 @@ async function playVoice(url, fallbackDur, text) {
   }
 }
 
+/**
+ * 一句字幕该显示多久：按字数，每字 240ms，底 400ms，夹在 1.2–12 秒。
+ * （以前是 每字 300ms、地板 6 秒、封顶 18 秒 —— 地板太高，20 字以下全被夹成 6 秒，
+ *   她 71% 的消息不到 20 字，等于所有短句都显示 6 秒，下一句一来就被顶掉。）
+ * 有真音频时不用这个数，直接用音频长度。
+ */
+function sayDurMs(n) {
+  return Math.max(1200, Math.min(12000, 400 + Math.max(0, Number(n) || 0) * 240));
+}
+
+/** 把排队里的下一句放到气泡上（同一时刻只有一句在显示） */
+function sayNext() {
+  if (sayShowing) return;
+  const it = SAY_Q.shift();
+  if (!it) return;
+  sayShowing = it;
+  it.until = Date.now() + it.dur;
+  lastSayText = it.t;
+  lastSayAt = Date.now();
+  SAY_RECENT.set(it.t, Date.now());
+  if (SAY_RECENT.size > 60) { for (const [k, v] of SAY_RECENT) if (Date.now() - v > 60000) SAY_RECENT.delete(k); }
+  try { window.dispatchEvent(new CustomEvent('fish-say', { detail: { text: it.t, proactive: it.proactive } })); } catch { /* ignore */ }
+  BUBBLE.textContent = it.t;
+  BUBBLE.classList.toggle('proactive', it.proactive);
+  BUBBLE.classList.add('show');
+  talkingUntil = it.until;
+  if (bubbleTimer) clearTimeout(bubbleTimer);
+  bubbleTimer = setTimeout(() => {
+    BUBBLE.classList.remove('show');
+    sayShowing = null;
+    sayNext();
+  }, it.dur);
+  hud(`说话中 · ${it.t.length} 字（${(it.dur / 1000).toFixed(1)} 秒）`);
+}
+
 function say(text, holdMs, opts) {
   const t = String(text || '').trim();
   if (!t) return;
   // 页面外壳的「对话记录」靠这个事件追加她刚说的话
   const proactive = !!(opts && opts.proactive);
-  const dur = holdMs || Math.max(6000, Math.min(18000, t.length * 300));
-  // 镜像（say）和出声（voice）会把同一句各送一次，间隔只有一两秒：
-  // 那时只把嘴的时值续上，不再重放气泡、也不在对话记录里多记一条。
-  if (!proactive && t === lastSayText && Date.now() - lastSayAt < 8000) {
-    talkingUntil = Math.max(talkingUntil, Date.now() + dur);
+  const dur = holdMs > 0 ? holdMs : sayDurMs(t.length);
+  // 同一句会来两次：云端推送 + 镜像轮询、字幕 + 出声。
+  // 第二次不再重放气泡、也不在对话记录里多记一条。
+  // 只有带真实时长的（出声，holdMs = 音频长度）才续；
+  // 纯重复（镜像补一次）不能把嘴再拖长一整句。
+  const dupShown = t === lastSayText && Date.now() - lastSayAt < SAY_DEDUPE_MS;
+  const dupQueued = SAY_Q.some((it) => it.t === t && Date.now() - it.addedAt < SAY_DEDUPE_MS);
+  const dupRecent = Date.now() - (SAY_RECENT.get(t) || 0) < SAY_DEDUPE_MS;
+  if (!proactive && (dupShown || dupQueued || dupRecent)) {
+    if (holdMs > 0) {
+      if (sayShowing && sayShowing.t === t) {
+        // 正在显示：把气泡和嘴一起续到音频结束
+        const want = Date.now() + holdMs;
+        if (want > talkingUntil) talkingUntil = want;
+        if (want > sayShowing.until) {
+          sayShowing.until = want;
+          sayShowing.dur = want - Date.now();
+          if (bubbleTimer) clearTimeout(bubbleTimer);
+          bubbleTimer = setTimeout(() => {
+            BUBBLE.classList.remove('show');
+            sayShowing = null;
+            sayNext();
+          }, sayShowing.dur);
+        }
+      } else {
+        const q = SAY_Q.find((it) => it.t === t);
+        if (q) q.dur = Math.max(q.dur, holdMs);
+        else talkingUntil = Math.max(talkingUntil, Date.now() + holdMs);
+      }
+    }
     return;
   }
-  lastSayText = t;
-  try { window.dispatchEvent(new CustomEvent('fish-say', { detail: { text: t, proactive } })); } catch { /* ignore */ }
-  BUBBLE.textContent = t;
-  BUBBLE.classList.toggle('proactive', proactive);
-  BUBBLE.classList.add('show');
-  lastSayAt = Date.now();
-  talkingUntil = Date.now() + dur;
-  if (bubbleTimer) clearTimeout(bubbleTimer);
-  bubbleTimer = setTimeout(() => BUBBLE.classList.remove('show'), dur);
-  hud(`说话中 · ${t.length} 字`);
+  SAY_Q.push({ t, dur, proactive, addedAt: Date.now(), until: 0 });
+  while (SAY_Q.length > SAY_Q_MAX) SAY_Q.shift();   // 排不下就丢最旧的，别让字幕越积越晚
+  sayNext();
 }
+
+/** 排障：现在气泡在放什么、后面还排着几句 */
+window.__sayNow = () => ({
+  showing: sayShowing ? { text: sayShowing.t, until: sayShowing.until } : null,
+  queue: SAY_Q.map((it) => ({ text: it.t, dur: it.dur })),
+  talkingIn: Math.max(0, talkingUntil - Date.now())
+});
+
 
 function clampNum(v, def) {
   const n = Number(v);
@@ -5412,8 +5492,20 @@ function clearPose() {
 // 按「通道」清槽位：头 / 身 / 脸 / 尾 各清各的。
 // 以前换姿态是整层 clear()，歪头(头) 和 晃腰(身) 永远叠不起来，
 // 「歪着头摇尾巴」这类组合全被吃掉。
-function clearChannelSlot(ch) {
-  let n = 0;
+function takeOverParam(id, prio, exceptLayer, minPrio = 0) {
+  const p = Number(prio) || 0;
+  const lo = Number(minPrio) || 0;
+  for (const [ln, st] of layerParams) {
+    if (ln === exceptLayer) continue;
+    const e = st.get(id);
+    if (!e) continue;
+    const ep = Number(e.prio) || 0;
+    // minPrio：只想接管「跟她同级或更高」的那几层，别把底层情绪一起抹掉
+    if (e.until > Date.now() && ep <= p && ep >= lo) st.delete(id);
+  }
+}
+
+function clearChannelSlot(ch) {  let n = 0;
   for (const m of layerParams.values()) {
     for (const [id, o] of m) {
       if (o && o.ch === ch) { m.delete(id); n += 1; }
@@ -5561,23 +5653,27 @@ function applyPose(name, holdMs, opts = {}) {
   // 人看起来就僵在一个说不清的怪姿势上，待机呼吸也压不回来。
   // 只清「同一个通道」的旧姿态：头、身、脸、尾各自独立，
   // 所以「歪着头 + 晃腰 + 眯眼」能同时挂着（以前整层 clear，全被吃掉）
-  // ④ 排队：同一通道的上一段还在演（剩 >200ms）就不清它，让新的晚一点接上（交叉 260ms）。
+  // ④ 排队：**不再让两条姿态重叠**（11-25 晚：用户报「1 秒内连发两条动作会抽搐」）。
+  // 原先是「旧的继续演 + 新的延后 400ms 开始」，但两条姿态写的是同一批参数（前倾写 ParamAngleY -4，
+  // 看向你又把它写回 0），只要有两份轨迹在跑，画面就是「头上去一下、又掉回来」。
+  // 现在改成接管：新姿态把它碰到的参数从 pose 层里全部摘掉，从**当前屏幕上的实际值**出发，
+  // 一条轨迹走到新目标 —— 只有唯一一个写者，就不会来回抽。
   let poseOverlap = 0;
-  if ((window.__motionOn || {}).queue !== false) {
+  {
     const pl = layerOf('pose');
     if (pl && pl.size) {
       const nowMs = Date.now();
-      let until = 0;
-      for (const [, e] of pl) {
+      for (const [id, e] of pl) {
         const u = Number(e && e.until);
-        if (Number.isFinite(u) && u > nowMs && u > until) until = u;
+        if (Number.isFinite(u) && u > nowMs + 200) { poseOverlap = 1; break; }
       }
-      if (until > nowMs + 200) poseOverlap = Math.min(400, Math.max(0, until - nowMs - 260));
+      if (poseOverlap) {
+        for (const id of Object.keys(scaledSet || {})) pl.delete(id);
+        poseOverlap = 0;
+      }
     }
   }
-  if (poseOverlap) {
-    // 不清旧姿态：两条同时存在，新的从 poseOverlap 之后开始，旧的演到那时正好收尾
-  } else if (lastPose.name && lastPose.name !== key) {
+  if (!poseOverlap && lastPose.name && lastPose.name !== key) {
     clearChannelSlot(chName);
   }
   if (chName === 'face') clearFaceSlot();
@@ -5605,6 +5701,9 @@ function applyPose(name, holdMs, opts = {}) {
   if (poseOverlap) poseOpt.startDelay = poseOverlap;
   poseSeq += 1;
   poseOpt.rampMs = poseA > 0.15 ? 260 : (poseA < -0.15 ? 480 : 360);
+  // 接管：这些参数由这条姿态说了算，把别的层（word / 旧姿态所在通道）里同参数的旧条目摘掉，
+  // 否则两份轨迹并行，画面上就是「先上去、再掉回来」的抽搐。
+  for (const id of Object.keys(scaledSet)) takeOverParam(id, 3, 'pose');
   const n = setParamMap(scaledSet, ms, 3, chName, poseOpt);
   if (n) lastPose = { name: key, until: ms > 0 ? Date.now() + Math.min(60000, ms) : 0 };
   // 姿态也只写一次（理由同 applyPhrase）：三段式每段都会重新指目标，
@@ -5837,8 +5936,30 @@ function applyModelExpression(name) {
   } catch { return false; }
 }
 
+// 排期批次的状态（她给动作指定时刻时用）：只留最后一批，排障用
+const SCHED = { last: null };
+window.__schedInfo = () => SCHED.last;
+
 function handle(cmd) {
   if (!cmd || typeof cmd.type !== 'string') return;  lastCommandAt = Date.now();
+  // 排期批次：她给动作指定了「什么时候」（当他说到某个词 / 同时 / 延后多久）。
+  // 由云端 after-response 在文本定稿那一刻下发，这里只负责按 delay 准点触发。
+  // 为什么不在云端 setTimeout：云端和页面之间的网络抖动会让时刻漂 50–200ms，
+  // 而页面自己的钟是连续的，跟渲染同一帧，误差在一帧内。
+  if (cmd.type === 'sched') {
+    const items = Array.isArray(cmd.items) ? cmd.items.slice(0, 8) : [];
+    let n = 0;
+    for (const it of items) {
+      const c = it && it.cmd;
+      if (!c || typeof c.type !== 'string') continue;
+      const d = Math.max(0, Math.min(30000, Number(it.d) || 0));
+      n += 1;
+      if (d < 40) { try { handle(c); } catch { /* 单个动作失败不影响别的 */ } }
+      else setTimeout(() => { try { handle(c); } catch { /* ignore */ } }, d);
+    }
+    SCHED.last = { at: Date.now(), n, items: items.map((x) => ({ d: x.d, t: x.cmd && x.cmd.type, n: x.cmd && x.cmd.name })) };
+    return { ok: true, scheduled: n };
+  }
   // 她一动手 / 一开口，正在放的「待机动作」「事件动作」立刻让位。
   // 动作层是最后写的，不让位就会出现「她调了摇尾巴，屏幕上却是待机组那段尾巴」——
   // 13.36 写 eventAnimYield() 时忘了在入口调它，等于从没生效过（这次实测才发现）。

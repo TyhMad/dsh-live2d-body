@@ -191,9 +191,9 @@ powershell -ExecutionPolicy Bypass -File live2d/launch-desktop.ps1
 
 ## 插件工具
 
-一个工具 `动一动身体`，`op` 取（共 15 个）：
+一个工具 `动一动身体`，`op` 取（共 16 个）：
 
-`status` `look` `say` `voice` `face` `emotion` `word` `motion` `pose` `switch` `modelexpr` `anim` `stopanim` `autonomy` `scale`
+`status` `look` `say` `voice` `face` `emotion` `word` `motion` `pose` `switch` `modelexpr` `anim` `stopanim` `autonomy` `scale` `speak`
 
 - `face=开心`：整套表情，默认 25 秒后淡回心情脸；`holdMs=-1` 常驻；`face=委屈+生气` / `face=委屈60%+生气40%` 可混色；
 - `emotion={v,a,d}`：连续情绪（-1..1），会一直当底色；
@@ -203,8 +203,12 @@ powershell -ExecutionPolicy Bypass -File live2d/launch-desktop.ps1
 - `switch=钢盆` / `switch=钢盆,on=false`：道具开关；
 - `modelexpr=圈圈眼`：模型自带的 exp3 彩蛋动画（黑脸/流泪/爱心眼…）；
 - `anim=<名字>` / `stopanim`：播你自己在时间轴编辑器里编的动作；
+- `speak=messages=["…"]`：**替她把整句发出去**，顺带处理句中的 `[[动作]]` 标记——标记按字符位置换算成毫秒，剥干净之后才发进聊天。这是唯一能指定「动作落在第几个字」的通道；
+- `when=同时 / +0.8s / 说到「X」`：给任意动作指定时刻，不写就跟着这句话走；
 - `status`：连没连上、现在什么姿势、能做什么；
 - `look`：**自拍** → 交给能看图的模型描述自己。
+
+**没写 `when` 的动作不会当场演**：插件先攒着，等这句话真的发出去那一刻统一下发，和她这一轮的话同时开演（一轮里连发几条时，动作落在最后一条发出去的那一刻，比第一条晚 0.2–0.6 秒）。要精确到「第几个字」就用 `when` 或 `speak` 里的标记。用不用这些是她的自由，代码不强制。
 
 回执都带「做了什么 + 现在什么状态」，所以她能回答「你现在什么表情」。
 

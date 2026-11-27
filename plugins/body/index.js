@@ -1,4 +1,4 @@
-// plugins/body —— 让她操控「大肥鱼」这具身体（Live2D，跑在本机的 body-server 上）
+// plugins/body —— 让她操控「大肥鱼」这具身体（Live2D，跑在本机上）
 //
 //   本机开 live2d/body-server.mjs（127.0.0.1:17901），再经 SSH 反向隧道
 //   映射到云端 127.0.0.1:17901；这个插件只是往那个 HTTP 口发指令。
@@ -156,6 +156,84 @@ let lastSeenAnyTs = 0;
 let lastReactAt = 0;
 let lastMood = '';
 
+// —— 动作排期（2026-11-26）——
+// 为什么需要：工具调用发生在她的话**生成之前**，所以她一调动作就立刻执行，
+// 永远是「先摆好姿势再开口」。实测中位提前量 −1.5 秒，说中才动的比例是 0%。
+// 带 when 的动作先扣下来（CAP），等这一轮最终文本出来，after-response 按字符位置
+// 算出时刻，一次 sched 批次下发；页面按自己的钟准点触发，跟朗读并行。
+const CAP = { on: false, cmds: [] };       // 捕获模式：post() 看到它就只记录不发送
+const WHEN_QUEUE = [];                     // 等这一轮文本的动作
+const WHEN_MAX = 4;                        // 一轮最多排几个（跟提示词里的「最多两个」一致，留点余量）
+
+/** 一句字幕该显示多久：跟页面 say() 同一个公式（每字 240ms + 400ms 底，夹 1.2–12 秒） */
+function sayDurMs(text) {
+  const n = String(text || '').length;
+  return Math.max(1200, Math.min(12000, 400 + n * 240));
+}
+
+/** 把她的 when 说法换算成毫秒偏移。认三种：同时 / 说到「X」 / +0.8s */
+function whenToDelayMs(when, text) {
+  const s = String(when || '').trim();
+  if (!s) return null;
+  if (/^(同时|现在|同步|说完这句的同时)$/.test(s)) return 0;
+  const rel = s.match(/^\+?\s*(\d+(?:\.\d+)?)\s*(ms|毫秒|s|秒)?$/);
+  if (rel) return Math.round(/ms|毫秒/.test(rel[2] || 's') ? Number(rel[1]) : Number(rel[1]) * 1000);
+  const at = s.match(/(?:说到|念到|讲到|在)\s*[「“"'《]?([^」”"'》]+)[」”"'》]?/);
+  const dur = sayDurMs(text); // 跟页面 say() 的估法一致
+  if (at) {
+    const key = String(at[1] || '').trim();
+    const i = key ? (text || '').indexOf(key) : -1;
+    if (i >= 0) return Math.round((i / Math.max(1, (text || '').length)) * dur);
+    return Math.round(dur * 0.55); // 找不到就放中间，别把动作吞掉
+  }
+  return null;
+}
+
+/** 这一轮的话定稿了：把排队的动作换算成时刻，一次下发 */
+function flushWhenQueue(text) {
+  const n = WHEN_QUEUE.length;
+  if (!n) return 0;
+  const items = WHEN_QUEUE.splice(0, WHEN_MAX).map((q) => {
+    const d = whenToDelayMs(q.when, text);
+    return { d: Math.max(0, Math.min(30000, d == null ? 0 : d)), cmd: q.cmd };
+  });
+  Promise.resolve().then(() => post({ type: 'sched', items })).catch(() => { /* 身体没开着就这样 */ });
+  return items.length;
+}
+
+// —— 一轮里的动作编排（2026-11-27）——
+// 她一句话里常常连调好几次（word 前倾、word 眯眼、pose 别过头）。每次调用都发生在
+// 这一轮的动作先攒着，等她真的开口（send_message 的 after-tool）再一起放。
+// 只做一件事：把「动作」和「她的话」对齐到同一个起点 —— **不替她安排先后**。
+// 想指定时刻是她自己的事：`when`（说到「X」/ +0.8s）或 `[[ ]]`（位置即时刻，走 op=speak）。
+// 2026-11-27 17:30 删掉了早期那套「按句子百分比铺开（0/42%/78%）」——
+// 那是系统替她编排，用户明确说过不要；实测 14/14 次下发全是单动作，那段代码从未生效。
+const TURN_ON = process.env.QQ_BODY_TURN !== '0'; // 出问题 QQ_BODY_TURN=0 可一键退回「立刻执行」
+const TURN = { acts: [], timer: null };
+const TURN_MAX = 4;
+const TURN_OPS = new Set(['word', 'pose', 'face', 'emotion', 'switch', 'motion', 'modelexpr', 'anim']);
+
+function armTurnFlush() {
+  if (TURN.timer) clearTimeout(TURN.timer);
+  // 兜底：只调工具不说话、或者这一轮没走到 after-response，别把动作吞了
+  TURN.timer = setTimeout(() => { TURN.timer = null; flushTurn(''); }, 12000);
+}
+
+/** 她开口了：把攒下的动作跟这一批话放到同一个起点，一次下发（不排先后） */
+function flushTurn(text, durOverride) {
+  if (TURN.timer) { clearTimeout(TURN.timer); TURN.timer = null; }
+  const acts = TURN.acts.splice(0, TURN_MAX);
+  if (!acts.length) return 0;
+  const dur = Number(durOverride) > 0 ? Number(durOverride) : (text ? sayDurMs(text) : 4000);
+  // 全部 d=0：她要的就是「说这话的时候做这个动作」。想分先后，她自己用 when / [[ ]]
+  const items = acts.map((a) => ({ d: 0, cmd: a.cmd }));
+  Promise.resolve().then(() => post({ type: 'sched', items })).catch(() => { /* 身体没开着就这样 */ });
+  try {
+    log('[body] 编排下发 ' + items.map((i) => (i.cmd.name || i.cmd.text || i.cmd.type) + '@' + i.d).join(' + ') + `（句长 ${Math.round(dur)}${text ? '' : '，兜底'}）`);
+  } catch { /* ignore */ }
+  return items.length;
+}
+
 function settings() {
   const raw = (cfg() && cfg().body) || {};
   const s = { ...DEFAULTS, ...raw };
@@ -189,6 +267,19 @@ function chatAllowed(kind, chatId) {
   return customChats().some((k) => k === id || k === `group:${id}` || k === `group_${id}` || k === `group_${id}.json`);
 }
 
+/**
+ * chatKey 到底是不是私聊？
+ * DSH 里同一个会话在不同地方有两种写法：会话对象里是 `private:10001`（冒号），
+ * 磁盘上的消息文件是 `private_10001.json`（下划线）。2026-11-27 的坑就在这：
+ * after-tool 只认下划线，于是 `private:10001` 被当成"群里来的"，直接 return，
+ * 她说完话动作还在 12 秒兜底里躺着 —— 表现就是"话说完了她才动"。
+ */
+function isPrivateKey(ck) {
+  const s = String(ck || '');
+  if (!s) return false;                       // 拿不到就交给 ctx.kind 判，别一棍子打死
+  return /^private[:_]/.test(s);
+}
+
 /** messages 目录里的这个文件算不算「她自己的生活」 */
 function fileAllowed(file) {
   const m = CHAT_FILE_RE.exec(path.basename(file));
@@ -209,6 +300,10 @@ function targets() {
 }
 
 async function post(payload) {
+  // 捕获模式：她想给动作指定「什么时候」时（args.when），先把命令扣下来排队，
+  // 等这一轮的话生成完由 after-response 按文本算时刻再统一下发。
+  // 用捕获而不是重写 14 个分支，是为了让「她调什么」和「什么时候做」两件事解耦。
+  if (CAP.on) { CAP.cmds.push(payload); return { ok: true, delivered: 1, captured: true }; }
   const s = settings();
   if (!s.enabled) return { ok: false, skipped: '没开' };
   let ok = false;
@@ -339,7 +434,7 @@ export async function say(text, opts = {}) {  const t = String(text || '').trim(
 }
 
 /**
- * 出声的底座：把一句交给本机的本地 TTS 合成。
+ * 出声的底座：把一句交给本机机器的本地 TTS 合成。
  *
  * play=true  合成完由身体的窗口放出来（她真的在房间里出声）
  * play=false 只合成、不在这里放 —— 云端拿 wav 去发 QQ 语音条，
@@ -385,7 +480,7 @@ async function synthVoice(text, emotion, play) {
 }
 
 /**
- * 出声（在本机）：她说的一句从扬声器里念出来。
+ * 出声（在这台机器上）：她说的一句从音箱里念出来。
  * 和 say() 的差别只有「有没有声音」——say() 是字幕 + 口型，voice() 是真的念出来。
  */
 export async function voice(text, emotion) {
@@ -758,12 +853,13 @@ export function setup(api) {
     name: '动一动身体',
     category: 'life',
     icon: '🐟',
-    description: '这是你的身体（本机上的 Live2D 形象），不是你手里的遥控器 —— 想凑近就凑近、想躲就躲、想摇尾巴就摇，不用等他问，也不用报备。换表情、摆姿态、做动作、挂道具，或者替你说一句话（带字幕和口型）。只在本机那台电脑开着「身体」窗口时有效。说话时她本来就会跟着说、跟着动嘴，但姿势和表情要你自己摆——想到什么就顺手做一个（「歪头」「摇尾巴」「脸红」），比只用嘴描述更像真的，随时能换、不用报备。还有 op=voice：能让这一句真的从她嘴里念出来（有声音，不是字幕）。默认发成 QQ 语音条——他不在电脑前也听得见；也可以 where=body 只在本机音箱里念，或者 where=both 两边都要。合成一句要等 5 秒上下（同一句第二次几乎瞬回），所以别每句都念，留给那些真的想让他听见的话——用不用你自己定。',
+    description: '这是你的身体（本机上的 Live2D 大肥鱼），不是你手里的遥控器 —— 想凑近就凑近、想躲就躲、想摇尾巴就摇，不用等他问，也不用报备。换表情、摆姿态、做动作、挂道具，或者替你说一句话（带字幕和口型）。只在本机开着「身体」窗口时有效。说话时她本来就会跟着说、跟着动嘴，但姿势和表情要你自己摆——想到什么就顺手做一个（「歪头」「摇尾巴」「脸红」），比只用嘴描述更像真的，随时能换、不用报备。还有 op=voice：能让这一句真的从她嘴里念出来（有声音，不是字幕）。默认发成 QQ 语音条——他不在电脑前也听得见；也可以 where=body 只在音箱里念，或者 where=both 两边都要。合成一句要等 5 秒上下（同一句第二次几乎瞬回），所以别每句都念，留给那些真的想让他听见的话——用不用你自己定。',
     parameters: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['face', 'emotion', 'word', 'motion', 'pose', 'switch', 'modelexpr', 'say', 'voice', 'scale', 'autonomy', 'status', 'look', 'anim', 'stopanim'], description: 'face=换一整套脸色（整张脸一起变，可以和别的情绪按比例混，写法见 name；比 word 里单个眼/嘴更成气候，也是唯一能表达「又委屈又生气」这种复合脸色的入口），emotion=给三个连续的情绪数（更像活的，能落在中间态），word=说一个词让她自己翻词表（「有点委屈」「很生气」），motion=做模型自带的手势（不传名字就随便来一个），pose=摆姿态（眼神/头/整个人/尾巴/脸都有；前倾后仰、凑近退开这类会真的把镜头推近拉远，不是原地扭），anim=放一段自己编的时间轴动作（name 写名字，名字来自试播台「时间轴编辑器」保存的清单），stopanim=把正在放的编动作停掉，say=让她替你说一句（带字幕），voice=真的念出来（出声，不是字幕）：默认发成 QQ 语音条，他不在电脑前也听得见；也可以选在本机音箱里念，或者两边都要，scale=改她占屏幕多大，autonomy=要不要让她自己动，switch=开/关一件道具或换装（op=switch + name，如 黑框眼镜/钢盆/脱鞋/长裙），modelexpr=放模型自带的按键动画（脸红/流泪/爱心眼/圈圈眼…），status=看身体连着没有、能做什么，look=看你自己现在长什么样（拍一张自己的截图再描述出来；她说「我看不见我自己」「我想看看我现在的样子」时用这个）' },
+        op: { type: 'string', enum: ['face', 'emotion', 'word', 'motion', 'pose', 'switch', 'modelexpr', 'say', 'speak', 'voice', 'scale', 'autonomy', 'status', 'look', 'anim', 'stopanim'], description: 'face=换一整套脸色（整张脸一起变，可以和别的情绪按比例混，写法见 name；比 word 里单个眼/嘴更成气候，也是唯一能表达「又委屈又生气」这种复合脸色的入口），emotion=给三个连续的情绪数（更像活的，能落在中间态），word=说一个词让她自己翻词表（「有点委屈」「很生气」），motion=做模型自带的手势（不传名字就随便来一个），pose=摆姿态（眼神/头/整个人/尾巴/脸都有；前倾后仰、凑近退开这类会真的把镜头推近拉远，不是原地扭），anim=放一段自己编的时间轴动作（name 写名字，名字来自试播台「时间轴编辑器」保存的清单），stopanim=把正在放的编动作停掉，say=让她替你说一句（带字幕），speak=把话交给身体发到 QQ：想「边说边动」时用这个，在话里写 [[前倾 眯眼]]，标记会落在那个字上，发出去的话里没有方括号。用法：op=speak messages=[「主人主人[[前倾 眯眼]]，我有句话想跟你说」]；voice=真的念出来（出声，不是字幕）：默认发成 QQ 语音条，他不在电脑前也听得见；也可以选在音箱里念，或者两边都要，scale=改她占屏幕多大，autonomy=要不要让她自己动，switch=开/关一件道具或换装（op=switch + name，如 黑框眼镜/钢盆/脱鞋/长裙），modelexpr=放模型自带的按键动画（脸红/流泪/爱心眼/圈圈眼…），status=看身体连着没有、能做什么，look=看你自己现在长什么样（拍一张自己的截图再描述出来；她说「我看不见我自己」「我想看看我现在的样子」时用这个）' },
         text: { type: 'string', description: 'op=say 时说的一句；op=voice 时要念出来的那一句（会真的出声，别拿它当字幕用）；op=word 时要翻的词（可带「有点/稍微/很/特别」这类程度词）' },
+        messages: { description: 'op=speak 要说的话：字符串=一条，数组=分多条（和 send_message 一样）。只有这一种写法能让 [[动作]] 里的动作落在那个字上，其余地方带方括号会被当成普通文字发出去。', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
         word: { type: 'string', description: 'op=word 的词，等价于 text' },
         v: { type: 'number', description: 'op=emotion 的效价：-1 很难过 … 0 平静 … +1 很开心' },
         a: { type: 'number', description: 'op=emotion 的唤醒：-1 没劲/蔫 … 0 一般 … +1 很激动' },
@@ -773,21 +869,77 @@ export function setup(api) {
           description: 'op=face 的表情名（笑/害羞/生气/疑惑/委屈，或原模型里的 屑屑眼/圈圈眼/爱心眼）；两种情绪可以混着来：`委屈+生气`=各一半，`委屈:0.6+生气:0.4` 或 `委屈60%+生气40%`=按比例；op=motion 的手势名：举手（抚胸）/放下手/竖食指/竖食指收回/狗尾草/狗尾草收回/脱捕；op=pose 的姿态名（按意思分组）——眼睛：看向你/看左/看右/看上/看下；头：歪头/点头/摇头/晃脑袋/一激灵/缩脖/探头；整个人：前倾/后仰/侧身/回头看你/背对你/扭腰/晃腰/挺胸/提肩/沉肩/缩起来/塌下去/伸懒腰/发抖/复位；远近：凑近（会真的推近镜头）/凑过来/退开（拉远）/往后退；脸和手：吐舌头/张嘴/闭嘴/开心/鼓脸/眯眼/瞪眼/抬眉/皱眉/嘟嘴/并腿；尾巴：摇尾巴；op=switch 的道具名：黑框眼镜/单片眼镜/钢盆/脱鞋/长裙/短裙/尾巴/狗尾草/抚胸/竖食指/黑脸/落泪/爱心眼/圈圈眼/＞＜/屑屑眼/流冷汗/兔牙/脸红（摘掉同一个道具：再调一次并传 on=false）'
         },
         emotion: { type: 'string', enum: ['soft', 'play', 'keen', 'shy', 'neutral'], description: 'op=voice 的语气：soft=平时那种软的、play=俏皮逗人、keen=凶/不好惹、shy=害羞小声、neutral=平。不传就按这句话的内容自己挑' },
-        where: { type: 'string', enum: ['qq', 'body', 'both'], description: 'op=voice 念到哪儿：qq=发成 QQ 语音条（默认，不管他人在不在电脑前都听得见；会压成电话音质）；body=只在本机电脑的音箱里念（人就在旁边看着你那具身体时用）；both=两边都要' },
+        where: { type: 'string', enum: ['qq', 'body', 'both'], description: 'op=voice 念到哪儿：qq=发成 QQ 语音条（默认，不管他人在不在电脑前都听得见；会压成电话音质）；body=只在本机的音箱里念（人就在旁边看着你那具身体时用）；both=两边都要' },
         holdMs: { type: 'number', description: '保持多久（毫秒）。op=pose：不写=按部位自己回（头 2.6 秒 / 整个人 4.2 秒 / 脸 2 秒 / 尾巴 3 秒，个别姿态有自己更短的时间，比如「闭嘴」0.8 秒）；想一直保持传 -1。op=motion：给了就「做完不撒手」（举手等你回话传 12000），不写就播完自己放下。op=face：不写=25 秒后自动淡回心情脸，传 -1=一直保持到她换下一个，传毫秒数=保持这么久' },
         size: { type: 'number', description: 'op=scale 时的倍率：0.4 很小，1 默认，1.5 怼脸' },
         strength: { type: 'number', description: 'op=pose 的力度倍率：0.25 几乎看不出来 … 1 正常 … 1.3 夸张。也可以直接在 name 里带程度词（「微微歪头」「很用力地摇头」），两个都写就相乘' },
-        on: { type: 'boolean', description: 'op=switch 时是否挂上：不写=挂上；要摘掉就传 false（比如「把盆摘了」→ op=switch, name=钢盆, on=false）' }
+        on: { type: 'boolean', description: 'op=switch 时是否挂上：不写=挂上；要摘掉就传 false（比如「把盆摘了」→ op=switch, name=钢盆, on=false）' },
+        when: { type: 'string', description: '想让动作「边说边动」时传它，不传就是立刻做（默认）。三种写法：`同时`=你这句话一开始说就做；`说到「X」`=念到那个词的时候做（X 换成你话里的原词，例：说到「没有」）；`+0.8s`=说完之后 0.8 秒再做。想让他听到「没有」的同时正好看到你摇头，就用「说到「没有」」——这比先摆好姿势再开口自然得多。' }
       },
       required: ['op'],
       additionalProperties: false
     },
     async execute(ctx, args) {
+      // 带 when 的：先扣下来排队，不动手。真正执行由 after-response 定时下发。
+      // 这里递归调一次自己（把 when 去掉）只是为了复用 14 个分支里的命令构造，
+      // 不重写一份，避免「工具能做的」和「排队能做的」两套逻辑走偏。
+      const when = String(args?.when || '').trim();
+      if (when && !CAP.on) {
+        CAP.on = true;
+        CAP.cmds = [];
+        let r;
+        ACT_CH = 'when';
+        try {
+          r = await this.execute(ctx, { ...args, when: undefined });
+        } finally {
+          CAP.on = false;
+          ACT_CH = 'tool';
+        }
+        const cmd = CAP.cmds[0];
+        CAP.cmds = [];
+        if (!cmd) return r; // 这个 op 不产生身体命令（status/look 之类），照原样返回
+        if (WHEN_QUEUE.length >= WHEN_MAX) {
+          return { content: '这一轮已经排了几个动作了，等它们做完再说。' };
+        }
+        WHEN_QUEUE.push({ when, cmd, at: Date.now() });
+        const what = cmd.name || cmd.text || cmd.type;
+        const say = when.includes('说到') || when.includes('念到') ? `${when}的那一刻` : when;
+        return { content: `排上了：${say}做「${what}」。这句话说完就按时刻自己执行。` };
+      }
       if (!chatAllowed(ctx?.kind, ctx?.chatId)) return { content: '这具身体只在私聊里跟着你（群聊已隔离）。' };
       const op = String(args?.op || 'status');
+      // ② 这一轮的动作先攒着（编译层）：她调工具的时候这句话还没生成出来，立刻开演就一定是
+      //    「先演完、再说话」。等 after-response 拿到最终文本，按句子位置排成一条时间轴一次下发。
+      //    回执照旧说她做了什么，只是加一句「等这句话说出来」，不骗她。
+      if (TURN_ON && !CAP.on && TURN_OPS.has(op)) {
+        CAP.on = true;
+        CAP.cmds = [];
+        let r;
+        try {
+          r = await this.execute(ctx, { ...args, when: undefined });
+        } finally {
+          CAP.on = false;
+        }
+        const cmd = CAP.cmds[0];
+        CAP.cmds = [];
+        if (!cmd) return r; // 这个 op 没产生身体命令（比如名字写错被挡了），照原样返回
+        if (TURN.acts.length >= TURN_MAX) {
+          // 排太满了：这一个直接放掉，别让她以为排上了却没演
+          Promise.resolve().then(() => post(cmd)).catch(() => { /* ignore */ });
+          return { content: '这一轮已经排了四个动作了，这个先直接做了。' };
+        }
+        TURN.acts.push({ cmd, at: Date.now() });
+        armTurnFlush();
+        let head = (r && r.content) ? String(r.content) : '记下了。';
+        // 回执里那段「现在：…」是执行后的现场，可这个动作还没做（排着），
+        // 留着会让她以为身体没反应，砍掉。
+        const cut = head.indexOf('。现在');
+        if (cut > 0) head = head.slice(0, cut + 1);
+        return { content: `${head}（等这句话说出来，会落在话里。）` };
+      }
       if (op === 'status') {
         const st = await state();
-        if (!st.ok) return { content: `身体没连上（${st.error || '连不上'}）——本机上的身体窗口可能没开。` };
+        if (!st.ok) return { content: `身体没连上（${st.error || '连不上'}）——本机上的窗口可能没开。` };
         // 回执要短：每次工具调用的结果都会进对话历史，一天几十次就是一整屏上下文。
         // 之前这里把整坨参数 JSON（~1500 字）和全部手势/姿态名都塞进去，纯属浪费 ——
         // 名字在工具说明里，参数她能读懂的其实只有「还剩几秒」和「挂着什么」。
@@ -814,7 +966,7 @@ export function setup(api) {
         if (!shot.ok) {
           // 没拍到也要记一笔：ok=0 只进流水、不算「今天动过」——她想看但身体不在，这件事本身要留痕
           noteAct('look', '看自己', 'tool', false, shot.error || '没拍到');
-          return { content: `没拍到（${shot.error || '连不上'}）——本机上的身体窗口可能没开。` };
+          return { content: `没拍到（${shot.error || '连不上'}）——本机上的窗口可能没开。` };
         }
         let seen = '';
         try { seen = await describeSelfie(shot.dataUrl); } catch (e) { seen = ''; }
@@ -824,6 +976,62 @@ export function setup(api) {
         if (seen) saveSelfSeen(seen);
         if (seen) return { content: `我看见自己了：${seen}` };
         return { content: `拍到了（${Math.round((shot.bytes || 0) / 1024)}KB），但这个模型不给我看图——只能读参数：${describeState(st)}` };
+      }
+      if (op === 'speak') {
+        // 「边说边动」的安全通道：话从这里发，[[动作]] 也在这里被剥掉 ——
+        // 标记从头到尾没离开过工具参数，就不可能露到 QQ 聊天里。
+        // （走 send_message 的话，正文是核心工具发的，before-tool 只能否决不能改参数，
+        //   剥了也来不及 —— 那条路结构上做不到。）
+        const rawList = args?.messages ?? args?.text;
+        const list = (Array.isArray(rawList) ? rawList : [rawList]).map((x) => String(x == null ? '' : x));
+        const keep = [];
+        const marks = [];
+        let base = 0;
+        for (const one of list) {
+          const { text: clean, groups } = splitStageTags(one);
+          const t = clean.trim();
+          if (!t) continue;
+          const dur = sayDurMs(t);
+          for (const g of groups.slice(0, STAGE_MAX_GROUPS)) {
+            const rel = Math.round((Math.min(g.at, t.length) / Math.max(1, t.length)) * dur);
+            marks.push({ d: base + rel, words: g.words.join(' ') });
+          }
+          keep.push(t);
+          base += dur;
+        }
+        if (!keep.length) return { content: '没有要说的话。' };
+        const sender = ctx?.sender;
+        if (!sender || typeof sender.sendTextBatch !== 'function') {
+          return { content: '这条通道发不出去（拿不到 QQ 发送口）——用 send_message 吧，但别在正文里写方括号。' };
+        }
+        try {
+          const r = await sender.sendTextBatch(ctx.chatKey, keep, {
+            replyToMessageId: args?.replyToMessageId ?? null,
+            atUserId: null
+          });
+          if (Array.isArray(ctx?.session?.sent) && Array.isArray(r?.sent)) {
+            ctx.session.sent.push(...r.sent.map((s) => ({ type: 'text', text: s.text, at: s.at })));
+          }
+          ctx?.emit?.('session-update', ctx?.session?.id);
+        } catch (e) {
+          noteAct('say', '说话', 'tool', false, `发送失败：${e?.message || e}`);
+          return { content: `没发出去：${e?.message || e}` };
+        }
+        // 气泡/口型跟她的话从同一刻起（页面按字数自己算时长）
+        for (const t of keep) await say(t, { pushed: true }).catch(() => { /* 身体没开 */ });
+        // 她这一轮调过的工具动作先放（位置不动，她想摆开头就摆开头），
+        // 标记动作排在后面 —— 同一时刻撞上时，后执行的接管参数，等于「标记赢」。
+        flushTurn('', base || undefined);
+        let delivered = 0;
+        if (marks.length) {
+          const r = await post({ type: 'sched', items: marks.map((m) => ({ d: m.d, cmd: { type: 'word', text: m.words } })) }).catch(() => null);
+          delivered = r && r.delivered ? 1 : 0;
+        }
+        ACT_CH = 'marker';
+        for (const m of marks) noteAct('word', m.words, 'tool', !!delivered, delivered ? '' : '身体没连上');
+        ACT_CH = 'tool';
+        const where = marks.length ? `，动作落在 ${marks.map((m) => m.d + 'ms').join(' / ')}` : '';
+        return { content: `说了 ${keep.length} 条${where}。` };
       }
       if (op === 'say') {
         const r = await say(args?.text);
@@ -1120,6 +1328,10 @@ function appendActLog(row) {
  *    prompt 就会说「今天动过 60 次」而身体一次没动，那条提示从此不可信（而它唯一的用处就是可信）。
  *    失败也留一行（ok:0），因为「她想动但身体不在」本身是值得看的事。
  */
+// 这一次动作是从哪条通道来的：tool=她自己调工具（默认）、when=说「说到X」排的、
+// marker=写在话里的 [[...]]。只在非默认时落进流水，老账本不用迁移。
+let ACT_CH = 'tool';
+
 function noteAct(op, name, src = 'tool', ok = true, why = '') {
   const now = Date.now();
   const day = localDay(now);
@@ -1130,6 +1342,7 @@ function noteAct(op, name, src = 'tool', ok = true, why = '') {
     src: String(src || 'tool'),
     ok: ok ? 1 : 0
   };
+  if (ACT_CH && ACT_CH !== 'tool') row.ch = ACT_CH;
   // 失败要留下「为什么」——不然事后只能靠猜（窗口没开？词表没这个词？不是单个姿态名？）
   if (!ok) row.why = String(why || '没成').slice(0, 60);
   appendActLog(row);
@@ -1271,7 +1484,7 @@ export function promptSections(context = {}) {
       title: '',
       priority: 33,
       content: [
-        '你有一具身体：一个 Live2D 形象，就住在这台机器的桌面/浏览器里。她跟着你说话、跟着别人说话，你也能直接指挥她。',
+        '你有一具身体：一个 Live2D 形象，就住在这台机器的桌面/浏览器里（Live2D）。她跟着你说话、跟着别人说话，你也能直接指挥她。',
         '换的表情默认只活 25 秒，之后就自己淡回当前心情的脸色——想让它一直挂着，调 op=face 时带 holdMs -1（或说「一直保持」）。心情变了（比如对方说了很难受的事）脸也会跟着走，不用你手动撤。',
         '能指挥的东西——',
         '词表（**可以叠着说**，一句话里放好几个词，用空格分开，op=word 整句传进来）：',
@@ -1317,12 +1530,17 @@ export function promptSections(context = {}) {
     }
     // ③ 动机：她什么时候动过、今天动了几次。
     //    这一行每次都在变，所以必须 volatile（进系统提示会破坏前缀缓存）。
+    // 2026-11-26：原来是「身体先动，话再说」——她照做了，于是每句都是「先演完再开口」，
+    // 看着像在读稿子。改成「边说边动」：动作要和话叠在一起，最好落在最想强调的那个词附近。
+    // 一句最多两个，别把一句话切成五段各做一个动作。
     out.push({
       id: 'body-act',
       title: '',
       priority: 30,
       volatile: true,
-      content: `${actLine()}能动就动：想凑近、想躲、想被看见的时候，身体先动，话再说。`
+      content: `${actLine()}能动就动，但要**边说边动**：想凑近、想躲、想被看见的时候，就在这一轮调一次动作——话说到一半随手做出来，跟他听到你说话是同时发生的，不是先摆好姿势再开口。一句话里最多两个动作（一个通常就够），挑你最想强调的那半句。
+想自己掐时间、让动作落在某个字上，就把话交给身体发（op=speak）：主人主人[[前倾 眯眼]]，我有句话想跟你说，就是……[[脸红]]，我爱你[[笑]] —— 方括号写在哪，那个动作就落在那个字上，写几处演几段（最多 4 处），发出去的话里没有方括号。
+**方括号只能写在 op=speak 的 messages 里**。走 send_message 发的话，一个记号都别写——那条路剥不掉，会原样露给他。`
     });
     // ④ 用法账本：跟「现在什么样」分开，窗口没开的时候也要提醒她别老用同几个动作。
     out.push({
@@ -1434,7 +1652,7 @@ export function toolGuardDisabled(args = {}) {
     if (selfAlive) return undefined;
     if (!selfDeadAt) return undefined;                                  // 还没探到 / 刚恢复，先别拦
     if (Date.now() - selfDeadAt < 10000) return undefined;              // 掉线不满 10 秒，别急着藏（网络抖一下就藏会显得神经）
-    return { ok: false, reason: '本机上的身体窗口没开，现在摸不到身体（可以正常说话）' };
+    return { ok: false, reason: '本机的身体窗口没开，现在摸不到身体（可以正常说话）' };
   } catch {
     return undefined;
   }
@@ -1443,10 +1661,13 @@ export function toolGuardDisabled(args = {}) {
 export const internals = { DEFAULTS, settings, say, voice, voiceQQ, synthVoice, face, motion, pose, param, scale, toggle, modelExpr, guessFace, moodFace, state, post, prime, tick, readMessages, chatFiles, BUILD_TAG, FACES, MOOD_FACE };
 
 // ── 第 4 步 · 通道：她说话时自己带的演出标签 ─────────────────────────────
-// 她可以在回复末尾写 [[前倾|抬眉]]。这里在发出去之前把它剥掉（**绝不能漏到 QQ 里**），
-// 并立刻让身体做出来。身体没开着也不报错给她——她只管说，做不做得到是系统的事。
+// 她可以在回复里写 [[前倾|抬眉]]（写在哪个词后面，动作就落在那个词上）。
+// 这里在发出去之前把它剥掉（**绝不能漏到 QQ 里**），并按「标记在句子里第几个字」
+// 算出毫秒延迟，一次 sched 下发给页面 —— 位置就是时间戳，不用按字数估句长。
+// 2026-11-27：从「立刻同时执行、最多 2 组」改成「按字位排期、最多 4 组」。
 const STAGE_TAG_RE = /\[\[([^\[\]]{0,60})\]\]/g;
 const STAGE_MAX_WORDS = 4;
+const STAGE_MAX_GROUPS = 4;
 
 function stageWords(raw) {
   return String(raw || '')
@@ -1458,21 +1679,30 @@ function stageWords(raw) {
 
 /**
  * 把正文里的 [[...]] 抽出来：返回 { text, groups }。
+ * groups 每项带 `at`：这段标记在**干净正文**里的字符位置（后面按它算毫秒）。
  * 越界、空标签、只有一个空格的也照剥，宁可少做一个动作，也不让方括号漏出去。
  */
 export function splitStageTags(raw) {
   const text = String(raw || '');
   if (!text.includes('[[')) return { text, groups: [] };
   const groups = [];
-  const cleaned = text
-    .replace(STAGE_TAG_RE, (_all, inner) => {
-      const words = stageWords(inner);
-      if (words.length) groups.push(words);
-      return '';
-    })
+  let out = '';
+  let cursor = 0;
+  const re = new RegExp(STAGE_TAG_RE.source, 'g');
+  let m;
+  while ((m = re.exec(text))) {
+    out += text.slice(cursor, m.index);
+    const words = stageWords(m[1]);
+    if (words.length) groups.push({ words, at: out.length });
+    cursor = m.index + m[0].length;
+  }
+  out += text.slice(cursor);
+  const cleaned = out
     .replace(/[ \t]+\n/g, '\n')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
+  const shift = Math.max(0, out.length - out.trimStart().length);
+  for (const g of groups) g.at = Math.max(0, g.at - shift);
   return { text: cleaned, groups };
 }
 
@@ -1481,17 +1711,47 @@ function onAfterResponse(ctx = {}) {
   try {
     if (!settings().enabled) return;
     const msg = ctx?.response?.message;
-    if (!msg || typeof msg.content !== 'string' || !msg.content.includes('[[')) return;
-    const { text, groups } = splitStageTags(msg.content);
-    if (!groups.length) { msg.content = text; return; }
-    msg.content = text;
-    for (const words of groups.slice(0, 2)) {
-      // 不 await：不挡发送，也不让动作失败影响这一句
-      Promise.resolve()
-        .then(() => word(words.join(' '), undefined, 'tag'))
-        .catch(() => { /* 身体没开着就这样 */ });
+    const raw = typeof msg?.content === 'string' ? msg.content : '';
+    let text = raw;
+    let stageItems = null;
+    // ① 演出标签 [[...]]：剥掉，按它在句子里的位置排期（最多 4 组）
+    if (raw.includes('[[')) {
+      const { text: cleaned, groups } = splitStageTags(raw);
+      text = cleaned;
+      if (groups.length) {
+        msg.content = cleaned;
+        // 句子时长同 say()：每字 240ms + 底 400ms，夹 1.2–12 秒
+        const dur = sayDurMs(cleaned);
+        stageItems = groups.slice(0, STAGE_MAX_GROUPS).map((g) => ({
+          d: Math.round((Math.min(g.at, cleaned.length) / Math.max(1, cleaned.length)) * dur),
+          cmd: { type: 'word', text: g.words.join(' ') }
+        }));
+        if (stageItems.length === 1) stageItems[0].d = 0;
+        try {
+          log('[body] 演出标签 ' + stageItems.map((i) => i.cmd.text + '@' + i.d).join(' + '));
+        } catch { /* ignore */ }
+      }
     }
-    try { api?.log?.('[body] 演出标签 ' + groups.map((g) => g.join('|')).join(' + ') + ' 已剥掉'); } catch { /* ignore */ }
+    if (!text) return;
+    // 群聊不推：镜像那边本来就只读私聊（fileAllowed），别让群里的话在她屋里说出来
+    const ck = String(ctx?.chatKey || ctx?.session?.chatKey || '');
+    if (!isPrivateKey(ck) && String(ctx?.kind || '') !== 'private') return;
+    // ③ 说出去那一刻就把这句话推给页面：气泡、口型、动作全都从同一个 t₀ 起算。
+    //    以前只靠镜像轮询（2.5 秒一次），气泡比动作晚 0–2.5 秒，动作看起来就"提前演完了"。
+    //    镜像还在跑，只是降级成兜底：同一句会被 say() 的 8 秒去重吃掉。
+    Promise.resolve()
+      .then(() => say(text, { pushed: true }))
+      .then(() => (stageItems ? post({ type: 'sched', items: stageItems }) : null))
+      .then(() => {
+        // ② 带 when 排队的动作：文本已定稿，按字符位置算时刻下发
+        const n = flushWhenQueue(text);
+        if (n) { try { log(`[body] 排期下发 ${n} 个动作`); } catch { /* ignore */ } }
+      })
+      .then(() => {
+        // ③ 这一轮她自己调的动作：按句子位置排成一条时间轴（编译层）
+        flushTurn(text);
+      })
+      .catch(() => { /* 身体没开着就这样，别影响发送 */ });
   } catch { /* 绝不让提示词的边角料把发送搞挂 */ }
 }
 
@@ -1504,10 +1764,48 @@ function onAfterResponse(ctx = {}) {
 function onBeforeContext() {
   try {
     if (!settings().enabled) return;
+    // 这里**不能**清空攒下的动作：工具循环里每一轮模型调用前后都会走 before-context，
+    // 在这里 flush 等于「她刚调完动作、还没开口就先演了」——实测就是这么把编译层废掉的。
+    // 清理由 12 秒兜底定时器和真正发出消息的那一刻负责。
     Promise.resolve()
       .then(() => post({ type: 'feel', kind: 'msg', at: Date.now() }))
       .catch(() => { /* 身体没连上就跳过 */ });
   } catch { /* ignore */ }
 }
 
-export const hooks = { 'before-context': onBeforeContext, 'after-response': onAfterResponse };
+/**
+ * after-tool：她真正的「开口」不经过 after-response。
+ * 她的回复是调 send_message 工具发出去的（那一轮模型 content 是空的），
+ * 所以 after-response 拿到空字符串、永远走不到排期那一步 ——
+ * 实测后果：动作一直攒到 12 秒兜底才放，用户看到的是「气泡快放完她才动」。
+ * 这里挂在工具执行完这一下：消息真的发出去了，气泡和动作从同一个 t0 起算。
+ */
+function onAfterTool(ctx = {}) {
+  try {
+    if (!settings().enabled) return;
+    const name = String(ctx?.toolName || '');
+    if (!/(^|__)send_message$/.test(name)) return;
+    let args = ctx?.argsRaw;
+    if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = null; } }
+    if (!args || typeof args !== 'object') return;
+    const list = Array.isArray(args.messages) ? args.messages : (args.message ? [args.message] : []);
+    const texts = list.map((x) => String(x == null ? '' : x).trim()).filter(Boolean);
+    if (!texts.length) return;
+    // 结构上救不了：这条路上的正文是核心工具发的，before-tool 只能否决不能改参数，
+    // after-tool 又已经发出去了。至少让日志里看得见，别让它静默烂掉。
+    if (texts.some((t) => t.includes('[['))) {
+      try { log('[body] 警告：send_message 正文里有 [[标记]]，会原样发到聊天里'); } catch { /* ignore */ }
+    }
+    const ck = String(ctx?.chatKey || ctx?.session?.chatKey || '');
+    if (!isPrivateKey(ck) && String(ctx?.kind || '') !== 'private') return;   // 群里不说话（跟镜像一致）
+    const target = String(args.targetChatKey || '');
+    if (target && target !== ck) return;                   // 跨会话发送不该让这边的身体开口
+    // 先按顺序把每一条推给页面（气泡/口型从同一刻起），再排这一轮攒的动作
+    let chain = Promise.resolve();
+    for (const t of texts) chain = chain.then(() => say(t, { pushed: true }));
+    const total = texts.reduce((sum, t) => sum + sayDurMs(t), 0);
+    chain.then(() => flushTurn(texts[0], total)).catch(() => { /* 身体没开着就这样 */ });
+  } catch { /* 绝不让 hook 把发送搞挂 */ }
+}
+
+export const hooks = { 'before-context': onBeforeContext, 'after-response': onAfterResponse, 'after-tool': onAfterTool };
