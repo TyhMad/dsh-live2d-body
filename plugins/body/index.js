@@ -213,10 +213,24 @@ const TURN = { acts: [], timer: null };
 const TURN_MAX = 4;
 const TURN_OPS = new Set(['word', 'pose', 'face', 'emotion', 'switch', 'motion', 'modelexpr', 'anim']);
 
-function armTurnFlush() {
+// 2026-11-27 18:30：她有时把动作放在 send_message **之后**调（顺序不固定）。
+// 那时这一轮的话已经发出去了，没人再来触发 flush，动作只能等 12 秒兜底 ——
+// 用户看到的就是「第一句话说完才动」。记住最近一次说了什么，后到的动作按那句话补上。
+const LAST_SAY = { text: '', dur: 0, at: 0 };
+function noteLastSay(text, dur) {
+  LAST_SAY.text = String(text || '');
+  LAST_SAY.dur = Number(dur) || 0;
+  LAST_SAY.at = Date.now();
+}
+function recentSay(win = 8000) {
+  return LAST_SAY.at && Date.now() - LAST_SAY.at < win ? LAST_SAY : null;
+}
+
+function armTurnFlush(ms = 12000) {
   if (TURN.timer) clearTimeout(TURN.timer);
-  // 兜底：只调工具不说话、或者这一轮没走到 after-response，别把动作吞了
-  TURN.timer = setTimeout(() => { TURN.timer = null; flushTurn(''); }, 12000);
+  // 兜底：只调工具不说话、或者这一轮没走到 after-response，别把动作吞了。
+  // 后到的动作（话已经说过）用短兜底，别让她等到 12 秒以后。
+  TURN.timer = setTimeout(() => { TURN.timer = null; flushTurn(''); }, Math.max(300, Number(ms) || 12000));
 }
 
 /** 她开口了：把攒下的动作跟这一批话放到同一个起点，一次下发（不排先后） */
@@ -224,12 +238,17 @@ function flushTurn(text, durOverride) {
   if (TURN.timer) { clearTimeout(TURN.timer); TURN.timer = null; }
   const acts = TURN.acts.splice(0, TURN_MAX);
   if (!acts.length) return 0;
-  const dur = Number(durOverride) > 0 ? Number(durOverride) : (text ? sayDurMs(text) : 4000);
+  // 文本还没来（她先说完了才调动作）时，拿最近那句话当锚，别用 4000 的假句长
+  const late = text ? null : recentSay();
+  const dur = Number(durOverride) > 0
+    ? Number(durOverride)
+    : (text ? sayDurMs(text) : (late ? (late.dur || sayDurMs(late.text)) : 4000));
   // 全部 d=0：她要的就是「说这话的时候做这个动作」。想分先后，她自己用 when / [[ ]]
   const items = acts.map((a) => ({ d: 0, cmd: a.cmd }));
   Promise.resolve().then(() => post({ type: 'sched', items })).catch(() => { /* 身体没开着就这样 */ });
   try {
-    log('[body] 编排下发 ' + items.map((i) => (i.cmd.name || i.cmd.text || i.cmd.type) + '@' + i.d).join(' + ') + `（句长 ${Math.round(dur)}${text ? '' : '，兜底'}）`);
+    const tail = text ? '' : (late ? '，补在这句话上' : '，兜底');
+    log('[body] 编排下发 ' + items.map((i) => (i.cmd.name || i.cmd.text || i.cmd.type) + '@' + i.d).join(' + ') + `（句长 ${Math.round(dur)}${tail}）`);
   } catch { /* ignore */ }
   return items.length;
 }
@@ -929,7 +948,8 @@ export function setup(api) {
           return { content: '这一轮已经排了四个动作了，这个先直接做了。' };
         }
         TURN.acts.push({ cmd, at: Date.now() });
-        armTurnFlush();
+        // 话已经说过了（她把动作放在 send_message 之后调）：600ms 就补上，别等 12 秒
+        armTurnFlush(recentSay() ? 600 : 12000);
         let head = (r && r.content) ? String(r.content) : '记下了。';
         // 回执里那段「现在：…」是执行后的现场，可这个动作还没做（排着），
         // 留着会让她以为身体没反应，砍掉。
@@ -1019,6 +1039,7 @@ export function setup(api) {
         }
         // 气泡/口型跟她的话从同一刻起（页面按字数自己算时长）
         for (const t of keep) await say(t, { pushed: true }).catch(() => { /* 身体没开 */ });
+        noteLastSay(keep.join(' '), base);
         // 她这一轮调过的工具动作先放（位置不动，她想摆开头就摆开头），
         // 标记动作排在后面 —— 同一时刻撞上时，后执行的接管参数，等于「标记赢」。
         flushTurn('', base || undefined);
@@ -1788,7 +1809,12 @@ function onAfterTool(ctx = {}) {
     let args = ctx?.argsRaw;
     if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = null; } }
     if (!args || typeof args !== 'object') return;
-    const list = Array.isArray(args.messages) ? args.messages : (args.message ? [args.message] : []);
+    // messages 可能是数组，也可能就是一个字符串（2026-11-27 18:35 发现：她单句时确实发字符串，
+    // 旧代码只认数组/单数 message，于是整条路径直接 return —— 气泡不推、动作全等 12 秒兜底，
+    // 表现就是「第一句话说完才动」。）
+    const list = Array.isArray(args.messages)
+      ? args.messages
+      : (args.messages != null ? [args.messages] : (args.message != null ? [args.message] : []));
     const texts = list.map((x) => String(x == null ? '' : x).trim()).filter(Boolean);
     if (!texts.length) return;
     // 结构上救不了：这条路上的正文是核心工具发的，before-tool 只能否决不能改参数，
@@ -1804,7 +1830,7 @@ function onAfterTool(ctx = {}) {
     let chain = Promise.resolve();
     for (const t of texts) chain = chain.then(() => say(t, { pushed: true }));
     const total = texts.reduce((sum, t) => sum + sayDurMs(t), 0);
-    chain.then(() => flushTurn(texts[0], total)).catch(() => { /* 身体没开着就这样 */ });
+    chain.then(() => { noteLastSay(texts[0], total); flushTurn(texts[0], total); }).catch(() => { /* 身体没开着就这样 */ });
   } catch { /* 绝不让 hook 把发送搞挂 */ }
 }
 

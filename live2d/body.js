@@ -12,6 +12,8 @@ let physSwing = 1;   // 「手感」面板里的动作幅度倍率（晃腰/摇�
 let mouth = 0;          // 当前嘴张合 0..1
 let talkingUntil = 0;   // 说话到什么时候（时间戳）
 let heardUntil = 0;     // 他刚说话之后的一小段（epoch ms）：这段时间待机组不许开工
+let lastTalkAt = Date.now();  // 最后一次「有人在说话」：她的气泡或他发来的消息（epoch ms）。
+                              // 初始值 = 页面加载的那一刻：刚打开页面不该马上演待机。
 let talkSeed = Math.random() * 10;
 let bubbleTimer = null;
 let lastCommandAt = 0;
@@ -3635,9 +3637,15 @@ setInterval(refreshAnimLib, 5000);   // 5 秒足够：存完最多 5 秒她就�
 // 加上「段完了立刻换下一段」，长时间看下来几乎一直在动。改成：
 //   一次 4–10 秒，两次之间隔 45–120 秒，而且到点还有 35% 概率「这次就不动了」——
 //   人待着的时候大部分时间是静的，偶尔才动一下，这样才像在发呆而不是在表演。
+// 待机组：他不在的时候，她自己抽一段小动作演。
+// 2026-11-27：明明在聊天，待机动画还在放 —— 因为 heardUntil 只有 18 秒，
+// 他想想再回一句，中间的空档就被当成了「没人」。
+// 现在：必须安静 IDLE_QUIET_MS 才开机，开机后也降频（2–5 分钟一段）。
+const IDLE_QUIET_MS = 180000;   // 3 分钟没人说话，才允许第一段
 const IDLE_GROUP = {
   on: false, names: [], cur: '', nextAt: 0, plays: 0, skips: 0,
-  minGap: 45000, maxGap: 120000, lenMin: 4000, lenMax: 10000, skipP: 0.35,
+  quietMs: IDLE_QUIET_MS,
+  minGap: 120000, maxGap: 300000, lenMin: 4000, lenMax: 9000, skipP: 0.3,
 };
 // 排障用：临时改节奏（不写死，方便测「频率」这种时间尺度很长的东西）
 window.__idleTune = (o = {}) => {
@@ -3646,6 +3654,7 @@ window.__idleTune = (o = {}) => {
     if (Number.isFinite(v) && v >= 0) IDLE_GROUP[k] = v;
   }
   if (Number.isFinite(Number(o.skipP))) IDLE_GROUP.skipP = Math.max(0, Math.min(1, Number(o.skipP)));
+  if (Number.isFinite(Number(o.quietMs)) && Number(o.quietMs) >= 0) IDLE_GROUP.quietMs = Number(o.quietMs);
   IDLE_GROUP.nextAt = 0;
   return { ...IDLE_GROUP, names: IDLE_GROUP.names.slice() };
 };
@@ -3679,17 +3688,27 @@ window.__idleGroup = () => ({
   skipP: IDLE_GROUP.skipP,
   nextIn: IDLE_GROUP.nextAt ? Math.max(0, IDLE_GROUP.nextAt - Date.now()) : 0,
   talkIn: Math.max(0, talkingUntil - Date.now()), heardIn: Math.max(0, heardUntil - Date.now()),
+  quietMs: IDLE_GROUP.quietMs,
+  quietIn: Math.max(0, (IDLE_GROUP.quietMs || IDLE_QUIET_MS) - (Date.now() - (lastTalkAt || 0))),
 });
 function idleGroupTick(wall) {
   if (!IDLE_GROUP.on || !IDLE_GROUP.names.length) return;
   // 有人在说话 / 他刚发来消息 / 正在放动作 / 刚被她叫过 —— 都不打扰
   if (wall < talkingUntil) return;
   if (Date.now() < heardUntil) return;
+  // 只在「这么久没人跟她说过话、她也没说过话」时才开工。
+  // 聊天中途他多想一会儿，不该被当成走人。
+  const quiet = Date.now() - (lastTalkAt || 0);
+  if (quiet < (IDLE_GROUP.quietMs || IDLE_QUIET_MS)) {
+    IDLE_GROUP.nextAt = 0;
+    return;
+  }
   if (ANIM.active) return;
   const lastAct = Number((window.__vary || {}).lastAt) || 0;
   if (lastAct && wall - lastAct < 4500) return;
   if (!IDLE_GROUP.nextAt) {
-    IDLE_GROUP.nextAt = wall + IDLE_GROUP.minGap + Math.random() * (IDLE_GROUP.maxGap - IDLE_GROUP.minGap);
+    // 刚满安静门槛：几秒后就来一段，别让他干等两分钟。
+    IDLE_GROUP.nextAt = wall + 3000 + Math.random() * 12000;
     return;
   }
   if (wall < IDLE_GROUP.nextAt) return;
@@ -5123,6 +5142,7 @@ function sayNext() {
 function say(text, holdMs, opts) {
   const t = String(text || '').trim();
   if (!t) return;
+  lastTalkAt = Date.now();   // 她开口 = 这轮对话还活着，待机组别插队
   // 页面外壳的「对话记录」靠这个事件追加她刚说的话
   const proactive = !!(opts && opts.proactive);
   const dur = holdMs > 0 ? holdMs : sayDurMs(t.length);
@@ -6143,6 +6163,7 @@ function handle(cmd) {
     // 不加这条的话，她的待机动画会跨过整轮对话一直晃（实测她回话时 anim 字段还挂着「待机·摇尾巴」）。
     if (cmd.kind === 'msg' || cmd.kind === 'typing') {
       heardUntil = Math.max(heardUntil, Date.now() + 18000);
+      lastTalkAt = Date.now();   // 待机组的「安静计时」也归零
       try { eventAnimYield(); } catch { /* ignore */ }
     }
     const ok = typeof window.__feel === 'function' ? window.__feel(cmd.kind, cmd.at) : false;
